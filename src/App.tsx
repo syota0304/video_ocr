@@ -30,56 +30,63 @@ const defaultSelection: SelectionRect = {
 const defaultSelections: SelectionRect[] = [
     {
         label: 'TITLE',
-        x: 496,
-        y: 654,
-        width: 656,
-        height: 45,
+        x: 43,
+        y: 563,
+        width: 867,
+        height: 42,
         scaleX: 1,
         scaleY: 1,
     },
     {
         label: 'NOTES',
-        x: 669,
-        y: 592,
+        x: 196,
+        y: 505,
         width: 107,
-        height: 22,
-    },
-    {
-        label: 'CHORD',
-        x: 962,
-        y: 583,
-        width: 101,
-        height: 19,
-    },
-    {
-        label: 'PEAK',
-        x: 1248,
-        y: 570,
-        width: 88,
         height: 20,
     },
     {
-        label: 'CHARGE',
-        x: 670,
-        y: 613,
-        width: 107,
+        label: 'CHORD',
+        x: 508,
+        y: 505,
+        width: 108,
+        height: 20,
+    },
+    {
+        label: 'PEAK',
+        x: 828,
+        y: 503,
+        width: 104,
         height: 23,
     },
     {
+        label: 'CHARGE',
+        x: 196,
+        y: 527,
+        width: 106,
+        height: 21,
+    },
+    {
         label: 'SOF-LAN',
-        x: 961,
-        y: 602,
-        width: 101,
+        x: 509,
+        y: 526,
+        width: 107,
         height: 23,
     },
     {
         label: 'SCRATCH',
-        x: 1248,
-        y: 591,
-        width: 91,
-        height: 21,
+        x: 828,
+        y: 527,
+        width: 104,
+        height: 22,
     },
 ].map(e => ({...defaultSelection, ...e,}))
+
+const defaultPerspectivePoints = [
+    {x: 488, y: 139},
+    {x: 1335, y: 157},
+    {x: 1462, y: 916},
+    {x: 446, y: 1013},
+]
 
 export function App() {
     const [videoSrc, setVideoSrc] = useState<string | null>(null);
@@ -103,6 +110,9 @@ export function App() {
     const [isSeeking, setIsSeeking] = useState(false);
     const [diffThreshold, setDiffThreshold] = useState(20); // Default difference sensitivity
     const referenceImageData = useRef<ImageData | null>(null);
+    // State for perspective transform
+    const [perspectivePoints, setPerspectivePoints] = useState<{ x: number, y: number }[]>(defaultPerspectivePoints);
+    const [isSettingPerspective, setIsSettingPerspective] = useState(false);
 
 
     const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -116,25 +126,69 @@ export function App() {
             setProcessedImages([]);
             setRedrawIndex(null);
             setIsSeeking(false);
+            setPerspectivePoints(defaultPerspectivePoints);
+            setIsSettingPerspective(false);
         }
     };
 
     const captureFrame = useCallback(() => {
         const video = videoRef.current;
         const canvas = canvasRef.current;
+        const cv = cvRef.current;
+
         if (video && canvas && !video.paused) video.pause();
-        if (video && canvas) {
+        if (video && canvas && cv) {
             const context = canvas.getContext('2d', {willReadFrequently: true});
             if (context) {
-                canvas.width = video.videoWidth;
-                canvas.height = video.videoHeight;
-                context.drawImage(video, 0, 0, video.videoWidth, video.videoHeight);
-                setCapturedImage(context.getImageData(0, 0, canvas.width, canvas.height));
+                // Draw video to a temporary canvas to get ImageData
+                const tempCanvas = document.createElement('canvas');
+                tempCanvas.width = video.videoWidth;
+                tempCanvas.height = video.videoHeight;
+                const tempCtx = tempCanvas.getContext('2d');
+                if (!tempCtx) return;
+                tempCtx.drawImage(video, 0, 0, video.videoWidth, video.videoHeight);
+                const frameImageData = tempCtx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
+
+                if (perspectivePoints.length === 4) {
+                    // Apply perspective transform
+                    const src = cv.matFromImageData(frameImageData);
+                    const [tl, tr, br, bl] = perspectivePoints;
+                    const widthA = Math.sqrt(Math.pow(br.x - bl.x, 2) + Math.pow(br.y - bl.y, 2));
+                    const widthB = Math.sqrt(Math.pow(tr.x - tl.x, 2) + Math.pow(tr.y - tl.y, 2));
+                    const maxWidth = Math.max(widthA, widthB);
+                    const heightA = Math.sqrt(Math.pow(tr.x - br.x, 2) + Math.pow(tr.y - br.y, 2));
+                    const heightB = Math.sqrt(Math.pow(tl.x - bl.x, 2) + Math.pow(tl.y - bl.y, 2));
+                    const maxHeight = Math.max(heightA, heightB);
+
+                    const srcTri = cv.matFromArray(4, 1, cv.CV_32FC2, [tl.x, tl.y, tr.x, tr.y, br.x, br.y, bl.x, bl.y]);
+                    const dstTri = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, maxWidth, 0, maxWidth, maxHeight, 0, maxHeight]);
+                    const M = cv.getPerspectiveTransform(srcTri, dstTri);
+                    const dsize = new cv.Size(maxWidth, maxHeight);
+                    const warped = new cv.Mat();
+                    cv.warpPerspective(src, warped, M, dsize, cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar());
+
+                    canvas.width = maxWidth;
+                    canvas.height = maxHeight;
+                    cv.imshow(canvas, warped);
+                    setCapturedImage(context.getImageData(0, 0, canvas.width, canvas.height));
+
+                    src.delete();
+                    M.delete();
+                    srcTri.delete();
+                    dstTri.delete();
+                    warped.delete();
+                } else {
+                    // No transform, just use the original frame
+                    canvas.width = video.videoWidth;
+                    canvas.height = video.videoHeight;
+                    context.putImageData(frameImageData, 0, 0);
+                    setCapturedImage(frameImageData);
+                }
                 setOcrResults([]);
                 setProcessedImages([]);
             }
         }
-    }, []);
+    }, [perspectivePoints]);
 
     const getCanvasCoordinates = (event: MouseEvent<HTMLCanvasElement>) => {
         const canvas = canvasRef.current;
@@ -147,7 +201,21 @@ export function App() {
     };
 
     const handleMouseDown = (event: MouseEvent<HTMLCanvasElement>) => {
-        if (redrawIndex === null || !capturedImage) return;
+        if (!capturedImage) return;
+
+        if (isSettingPerspective) {
+            const pos = getCanvasCoordinates(event);
+            setPerspectivePoints(prev => {
+                const newPoints = [...prev, pos];
+                // Reset if more than 4 points are clicked
+                if (newPoints.length >= 4) {
+                    setIsSettingPerspective(false);
+                }
+                return newPoints;
+            });
+            return;
+        }
+        if (redrawIndex === null) return;
         event.preventDefault();
         setIsDrawing(true);
         const pos = getCanvasCoordinates(event);
@@ -192,6 +260,20 @@ export function App() {
     const handleRedraw = (index: number) => {
         setRedrawIndex(index);
     };
+
+    const handleSettingPerspective = () => {
+        const video = videoRef.current;
+        const canvas = canvasRef.current;
+        if (video && canvas) {
+            const context = canvas.getContext('2d');
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            context?.drawImage(video, 0, 0, video.videoWidth, video.videoHeight);
+            setCapturedImage(context?.getImageData(0, 0, canvas.width, canvas.height) ?? null);
+        }
+        setPerspectivePoints([]);
+        setIsSettingPerspective(true);
+    }
 
     const handleSelectionParamChange = (indexToChange: number, param: keyof SelectionRect, value: string | number | boolean) => {
         const updatedSelections = selections.map((selection, index) => {
@@ -344,7 +426,7 @@ export function App() {
         });
         setProcessedImages(urls);
 
-    }, [selections, capturedImage, isCvReady]);
+    }, [selections, capturedImage, isCvReady]); // Removed perspectivePoints from dependencies
 
     const compareImageData = (d1: Uint8ClampedArray, d2: Uint8ClampedArray) => {
         let diff = 0;
@@ -427,11 +509,34 @@ export function App() {
             context.strokeRect(rect.x, rect.y, rect.width, rect.height);
         });
 
+        // Draw perspective points and lines ONLY when setting them
+        // The result of the transform is already on the canvas.
+        if (isSettingPerspective && perspectivePoints.length > 0) {
+            context.strokeStyle = 'lime';
+            context.fillStyle = 'lime';
+            context.lineWidth = 1;
+            context.beginPath();
+            const [start, ...rest] = perspectivePoints;
+            context.moveTo(start.x, start.y);
+            rest.forEach(p => context.lineTo(p.x, p.y));
+            if (perspectivePoints.length === 4) {
+                context.closePath();
+            }
+            context.stroke();
+
+            perspectivePoints.forEach((p, i) => {
+                context.beginPath();
+                context.arc(p.x, p.y, 5, 0, 2 * Math.PI);
+                context.fill();
+                context.fillText(`${i + 1}`, p.x + 8, p.y + 8);
+            });
+        }
+
         if (isDrawing && startPoint && endPoint) {
             context.strokeStyle = 'red';
             context.strokeRect(startPoint.x, startPoint.y, endPoint.x - startPoint.x, endPoint.y - startPoint.y);
         }
-    }, [capturedImage, selections, isDrawing, startPoint, endPoint, redrawIndex]);
+    }, [capturedImage, selections, isDrawing, startPoint, endPoint, redrawIndex, isSettingPerspective, perspectivePoints]);
 
     return (
         <div className="App">
@@ -458,6 +563,22 @@ export function App() {
                                 <input type="number" value={frameRate}
                                        onChange={(e) => setFrameRate(parseInt(e.target.value, 10) || 60)} min={1}
                                        style={{width: '50px', marginLeft: '5px'}}/>
+                            </label>
+                        </div>
+                        <div style={{
+                            marginTop: '10px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '5px',
+                            flexWrap: 'wrap'
+                        }}>
+                            <button onClick={handleSettingPerspective} disabled={!videoSrc || isSettingPerspective}>
+                                台形補正範囲を設定
+                            </button>
+                            <label style={{marginLeft: '10px'}}>
+                                {isSettingPerspective ? `点をクリックしてください (${perspectivePoints.length}/4)` : `${perspectivePoints.length === 4 ? '設定済' : '未設定'}`}
+                                {perspectivePoints.length === 4 && perspectivePoints.map((p) =>
+                                    (`(${p.x.toFixed(0)},${p.y.toFixed(0)})`)).join(", ")}
                             </label>
                         </div>
                         <div style={{
@@ -527,7 +648,7 @@ export function App() {
                                             </td>
                                             <td style={{textAlign: 'center'}}>
                                                 <button onClick={() => handleRedraw(index)}
-                                                        disabled={(redrawIndex !== null && redrawIndex !== index) || isSeeking}
+                                                        disabled={(redrawIndex !== null && redrawIndex !== index) || isSeeking || isSettingPerspective}
                                                         style={{marginLeft: '5px'}}>
                                                     {redrawIndex === index ? '範囲設定中' : '範囲設定'}
                                                 </button>
@@ -570,7 +691,7 @@ export function App() {
                             style={{
                                 marginTop: '20px',
                                 border: '1px solid black',
-                                cursor: redrawIndex !== null ? 'crosshair' : 'default'
+                                cursor: (redrawIndex !== null || isSettingPerspective) ? 'crosshair' : 'default'
                             }}
                             onMouseDown={handleMouseDown}
                             onMouseMove={handleMouseMove}
