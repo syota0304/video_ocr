@@ -3,6 +3,7 @@ import './App.css';
 import Tesseract from 'tesseract.js';
 
 interface SelectionRect {
+    label: string;
     x: number;
     y: number;
     width: number;
@@ -10,9 +11,74 @@ interface SelectionRect {
     threshold: number;
     scaleX: number;
     scaleY: number;
-    digitsOnly: boolean;
-    label: string;
+    negative: boolean
 }
+
+const defaultSelection: SelectionRect = {
+    label: '',
+    x: 0,
+    y: 0,
+    width: 100,
+    height: 100,
+    threshold: 150,
+    scaleX: 3,
+    scaleY: 3,
+    negative: true,
+};
+
+const defaultSelections: SelectionRect[] = [
+    {
+        label: 'TITLE',
+        x: 496,
+        y: 654,
+        width: 656,
+        height: 45,
+        scaleX: 1,
+        scaleY: 1,
+    },
+    {
+        label: 'NOTES',
+        x: 669,
+        y: 592,
+        width: 107,
+        height: 22,
+    },
+    {
+        label: 'CHORD',
+        x: 962,
+        y: 583,
+        width: 101,
+        height: 19,
+    },
+    {
+        label: 'PEAK',
+        x: 1248,
+        y: 570,
+        width: 88,
+        height: 20,
+    },
+    {
+        label: 'CHARGE',
+        x: 670,
+        y: 613,
+        width: 107,
+        height: 23,
+    },
+    {
+        label: 'SOF-LAN',
+        x: 961,
+        y: 602,
+        width: 101,
+        height: 23,
+    },
+    {
+        label: 'SCRATCH',
+        x: 1248,
+        y: 591,
+        width: 91,
+        height: 21,
+    },
+].map(e => ({...defaultSelection, ...e,}))
 
 export function App() {
     const [videoSrc, setVideoSrc] = useState<string | null>(null);
@@ -21,11 +87,10 @@ export function App() {
     const [capturedImage, setCapturedImage] = useState<ImageData | null>(null);
     const [frameRate, setFrameRate] = useState(60);
 
-    const [isSelectionEnabled, setIsSelectionEnabled] = useState(false);
     const [isDrawing, setIsDrawing] = useState(false);
     const [startPoint, setStartPoint] = useState<{ x: number; y: number } | null>(null);
     const [endPoint, setEndPoint] = useState<{ x: number; y: number } | null>(null);
-    const [selections, setSelections] = useState<SelectionRect[]>([]);
+    const [selections, setSelections] = useState<SelectionRect[]>(defaultSelections);
     const [ocrResults, setOcrResults] = useState<string[]>([]);
     const [isOcrRunning, setIsOcrRunning] = useState(false);
     const [processedImages, setProcessedImages] = useState<string[]>([]);
@@ -33,8 +98,7 @@ export function App() {
 
     // State for auto-seeking
     const [isSeeking, setIsSeeking] = useState(false);
-    const [referenceIndex, setReferenceIndex] = useState<number | null>(null);
-    const [diffThreshold, setDiffThreshold] = useState(10); // Default difference sensitivity
+    const [diffThreshold, setDiffThreshold] = useState(20); // Default difference sensitivity
     const referenceImageData = useRef<ImageData | null>(null);
 
 
@@ -44,13 +108,11 @@ export function App() {
             const url = URL.createObjectURL(file);
             setVideoSrc(url);
             setCapturedImage(null);
-            setIsSelectionEnabled(false);
-            setSelections([]);
+            setSelections(defaultSelections);
             setOcrResults([]);
             setProcessedImages([]);
             setRedrawIndex(null);
             setIsSeeking(false);
-            setReferenceIndex(null);
         }
     };
 
@@ -82,7 +144,7 @@ export function App() {
     };
 
     const handleMouseDown = (event: MouseEvent<HTMLCanvasElement>) => {
-        if (!isSelectionEnabled || !capturedImage) return;
+        if (redrawIndex === null || !capturedImage) return;
         event.preventDefault();
         setIsDrawing(true);
         const pos = getCanvasCoordinates(event);
@@ -116,15 +178,6 @@ export function App() {
                         : selection
                 ));
                 setRedrawIndex(null);
-            } else {
-                setSelections(prev => [...prev, {
-                    ...newCoords,
-                    label: `Selection ${prev.length + 1}`,
-                    threshold: 128,
-                    scaleX: 1,
-                    scaleY: 1,
-                    digitsOnly: false
-                }]);
             }
         }
 
@@ -133,14 +186,7 @@ export function App() {
         setEndPoint(null);
     };
 
-    const handleDeleteSelection = (indexToDelete: number) => {
-        setSelections(prev => prev.filter((_, index) => index !== indexToDelete));
-        setOcrResults(prev => prev.filter((_, index) => index !== indexToDelete));
-        setProcessedImages(prev => prev.filter((_, index) => index !== indexToDelete));
-    };
-
     const handleRedraw = (index: number) => {
-        setIsSelectionEnabled(true);
         setRedrawIndex(index);
     };
 
@@ -165,20 +211,14 @@ export function App() {
         setIsOcrRunning(true);
         setOcrResults(Array(selections.length).fill('Processing...'));
 
-        const digitScheduler = Tesseract.createScheduler();
-        const normalScheduler = Tesseract.createScheduler();
+        const scheduler = Tesseract.createScheduler();
 
         try {
-            const digitWorker = await Tesseract.createWorker('eng');
-            await digitWorker.setParameters({tessedit_char_whitelist: '0123456789'});
-            digitScheduler.addWorker(digitWorker);
+            const worker = await Tesseract.createWorker('eng');
+            scheduler.addWorker(worker);
 
-            const normalWorker = await Tesseract.createWorker('eng');
-            normalScheduler.addWorker(normalWorker);
-
-            const jobPromises = selections.map((selection, index) => {
+            const jobPromises = selections.map((_selection, index) => {
                 const imageUrl = processedImages[index];
-                const scheduler = selection.digitsOnly ? digitScheduler : normalScheduler;
                 return scheduler.addJob('recognize', imageUrl).then((result: any) => ({result, index}));
             });
 
@@ -195,8 +235,7 @@ export function App() {
             console.error('OCR Error:', error);
             setOcrResults(Array(selections.length).fill('Error'));
         } finally {
-            await digitScheduler.terminate();
-            await normalScheduler.terminate();
+            await scheduler.terminate();
             setIsOcrRunning(false);
         }
     }, [processedImages, selections, isOcrRunning]);
@@ -271,7 +310,8 @@ export function App() {
             const data = imageData.data;
             for (let i = 0; i < data.length; i += 4) {
                 const avg = (data[i] + data[i + 1] + data[i + 2]) / 3;
-                const color = avg > rect.threshold ? 0 : 255;
+                let color = avg > rect.threshold ? 255 : 0;
+                if (rect.negative) color = 255 - color;
                 data[i] = color;
                 data[i + 1] = color;
                 data[i + 2] = color;
@@ -294,11 +334,13 @@ export function App() {
     };
 
     const findNextChange = useCallback(async () => {
-        if (referenceIndex === null || !videoRef.current || !canvasRef.current) return;
+        if (!videoRef.current || !canvasRef.current) return;
 
         const video = videoRef.current;
         const mainCtx = canvasRef.current.getContext('2d', {willReadFrequently: true});
         if (!mainCtx) return;
+
+        const referenceIndex = 0;
 
         const rect = selections[referenceIndex];
         referenceImageData.current = mainCtx.getImageData(rect.x, rect.y, rect.width, rect.height);
@@ -333,7 +375,7 @@ export function App() {
         captureFrame();
         setIsSeeking(false);
 
-    }, [referenceIndex, selections, frameRate, diffThreshold, captureFrame]);
+    }, [selections, frameRate, diffThreshold, captureFrame]);
 
     useEffect(() => {
         if (isSeeking) {
@@ -358,7 +400,6 @@ export function App() {
 
         selections.forEach((rect, index) => {
             if (index === redrawIndex) context.strokeStyle = 'orange';
-            else if (index === referenceIndex) context.strokeStyle = 'green';
             else context.strokeStyle = 'blue';
             context.strokeRect(rect.x, rect.y, rect.width, rect.height);
         });
@@ -367,7 +408,7 @@ export function App() {
             context.strokeStyle = 'red';
             context.strokeRect(startPoint.x, startPoint.y, endPoint.x - startPoint.x, endPoint.y - startPoint.y);
         }
-    }, [capturedImage, selections, isDrawing, startPoint, endPoint, redrawIndex, referenceIndex]);
+    }, [capturedImage, selections, isDrawing, startPoint, endPoint, redrawIndex]);
 
     return (
         <div className="App">
@@ -406,27 +447,11 @@ export function App() {
                             <button onClick={captureFrame}>Capture Frame</button>
                             {capturedImage && (
                                 <>
-                                    <button onClick={() => {
-                                        setIsSelectionEnabled(!isSelectionEnabled);
-                                        if (isSelectionEnabled) setRedrawIndex(null);
-                                    }} style={{marginLeft: '10px'}}>
-                                        {isSelectionEnabled ? 'Disable' : 'Enable'} Selection
-                                    </button>
                                     <button onClick={runOCR} disabled={isOcrRunning || selections.length === 0}
                                             style={{marginLeft: '10px'}}>
                                         {isOcrRunning ? 'Processing...' : 'Run OCR (Space)'}
                                     </button>
                                 </>
-                            )}
-                            {selections.length > 0 && (
-                                <button onClick={() => {
-                                    setSelections([]);
-                                    setOcrResults([]);
-                                    setProcessedImages([]);
-                                    setRedrawIndex(null);
-                                }} style={{marginLeft: '10px'}}>
-                                    Reset Selections
-                                </button>
                             )}
                         </div>
                         {selections.length > 0 && (
@@ -437,13 +462,13 @@ export function App() {
                                 gap: '5px',
                                 flexWrap: 'wrap'
                             }}>
-                                <button onClick={() => setIsSeeking(!isSeeking)} disabled={referenceIndex === null}>
+                                <button onClick={() => setIsSeeking(!isSeeking)}>
                                     {isSeeking ? 'Stop Seeking' : 'Find Next Change'}
                                 </button>
                                 <label>
                                     Diff Threshold:
                                     <input type="number" value={diffThreshold}
-                                           onChange={(e) => setDiffThreshold(parseInt(e.target.value, 10) || 10)}
+                                           onChange={(e) => setDiffThreshold(parseInt(e.target.value, 10) || 20)}
                                            min={1} max={255} style={{width: '50px', marginLeft: '5px'}}/>
                                 </label>
                             </div>
@@ -465,7 +490,6 @@ export function App() {
                                         <th>Threshold</th>
                                         <th>Scale X</th>
                                         <th>Scale Y</th>
-                                        <th>Digits Only</th>
                                         <th>Processed Image</th>
                                         <th>OCR Result</th>
                                     </tr>
@@ -473,25 +497,16 @@ export function App() {
                                     <tbody>
                                     {selections.map((rect, index) => (
                                         <tr key={index}
-                                            style={{backgroundColor: referenceIndex === index ? '#e0ffe0' : redrawIndex === index ? '#f0f0f0' : 'transparent'}}>
+                                            style={{backgroundColor: redrawIndex === index ? '#f0f0f0' : 'transparent'}}>
                                             <td>{index + 1}</td>
                                             <td>
-                                                <input type="text" value={rect.label}
-                                                       onChange={(e) => handleSelectionParamChange(index, 'label', e.target.value)}
-                                                       style={{width: '80px'}}/>
+                                                {rect.label}
                                             </td>
                                             <td style={{textAlign: 'center'}}>
-                                                <button onClick={() => setReferenceIndex(index)}
-                                                        disabled={isSeeking}>{referenceIndex === index ? 'Reference' : 'Set as Ref'}</button>
                                                 <button onClick={() => handleRedraw(index)}
                                                         disabled={(redrawIndex !== null && redrawIndex !== index) || isSeeking}
                                                         style={{marginLeft: '5px'}}>
-                                                    {redrawIndex === index ? 'Redrawing...' : 'Redraw'}
-                                                </button>
-                                                <button onClick={() => handleDeleteSelection(index)}
-                                                        style={{marginLeft: '5px'}}
-                                                        disabled={redrawIndex !== null || isSeeking}>
-                                                    Delete
+                                                    {redrawIndex === index ? '範囲設定中' : '範囲設定'}
                                                 </button>
                                             </td>
                                             <td>{rect.x.toFixed(0)}</td>
@@ -513,10 +528,6 @@ export function App() {
                                                        onChange={(e) => handleSelectionParamChange(index, 'scaleY', parseFloat(e.target.value))}
                                                        min={0.1} step={0.1} style={{width: '50px'}}/>
                                             </td>
-                                            <td style={{textAlign: 'center'}}>
-                                                <input type="checkbox" checked={rect.digitsOnly}
-                                                       onChange={(e) => handleSelectionParamChange(index, 'digitsOnly', e.target.checked)}/>
-                                            </td>
                                             <td>
                                                 {processedImages[index] &&
                                                     <img src={processedImages[index]}
@@ -536,7 +547,7 @@ export function App() {
                             style={{
                                 marginTop: '20px',
                                 border: '1px solid black',
-                                cursor: isSelectionEnabled ? 'crosshair' : 'default'
+                                cursor: redrawIndex !== null ? 'crosshair' : 'default'
                             }}
                             onMouseDown={handleMouseDown}
                             onMouseMove={handleMouseMove}
