@@ -1,6 +1,7 @@
 import {useState, type ChangeEvent, useRef, type MouseEvent, useEffect, useCallback} from 'react';
 import './App.css';
 import Tesseract from 'tesseract.js';
+import cvReadyPromise from "@techstark/opencv-js";
 
 interface SelectionRect {
     label: string;
@@ -96,6 +97,8 @@ export function App() {
     const [processedImages, setProcessedImages] = useState<string[]>([]);
     const [redrawIndex, setRedrawIndex] = useState<number | null>(null);
 
+    const cvRef = useRef<any>(null);
+    const [isCvReady, setIsCvReady] = useState(false);
     // State for auto-seeking
     const [isSeeking, setIsSeeking] = useState(false);
     const [diffThreshold, setDiffThreshold] = useState(20); // Default difference sensitivity
@@ -277,51 +280,71 @@ export function App() {
         };
     }, [videoSrc, frameRate, handleSeek, runOCR]);
 
+    // Effect to handle OpenCV.js initialization
+    useEffect(() => {
+        const initializeCv = async () => {
+            try {
+                // Promiseが解決されるのを待ち、解決されたcvオブジェクトをrefに格納します。
+                cvRef.current = await cvReadyPromise;
+                console.log("OpenCV.js is ready!");
+                // ビルド情報をログに出力して、正しくロードされたことを確認します。
+                console.log(cvRef.current.getBuildInformation());
+                setIsCvReady(true);
+            } catch (error) {
+                console.error("Error initializing OpenCV.js", error);
+            }
+        };
+        initializeCv();
+    }, []);
+
     // Effect to pre-process images for table display
     useEffect(() => {
-        if (!capturedImage || !canvasRef.current) return;
+        // OpenCV.jsの準備が完了し、画像がキャプチャされるまで待機します
+        if (!isCvReady || !capturedImage || !canvasRef.current) return;
+
+        const cv = cvRef.current;
+        if (!cv) return;
 
         const mainContext = canvasRef.current.getContext('2d');
         if (!mainContext) return;
 
         const urls = selections.map(rect => {
-            const scaledWidth = Math.round(rect.width * rect.scaleX);
-            const scaledHeight = Math.round(rect.height * rect.scaleY);
-
-            if (scaledWidth <= 0 || scaledHeight <= 0) return '';
-
-            const tempCanvas = document.createElement('canvas');
-            tempCanvas.width = scaledWidth;
-            tempCanvas.height = scaledHeight;
-            const tempCtx = tempCanvas.getContext('2d');
-            if (!tempCtx) return '';
-
-            const srcCanvas = document.createElement('canvas');
-            srcCanvas.width = rect.width;
-            srcCanvas.height = rect.height;
-            const srcCtx = srcCanvas.getContext('2d');
-            if (!srcCtx) return '';
-            const originalImageData = mainContext.getImageData(rect.x, rect.y, rect.width, rect.height);
-            srcCtx.putImageData(originalImageData, 0, 0);
-
-            tempCtx.drawImage(srcCanvas, 0, 0, scaledWidth, scaledHeight);
-
-            const imageData = tempCtx.getImageData(0, 0, scaledWidth, scaledHeight);
-            const data = imageData.data;
-            for (let i = 0; i < data.length; i += 4) {
-                const avg = (data[i] + data[i + 1] + data[i + 2]) / 3;
-                let color = avg > rect.threshold ? 255 : 0;
-                if (rect.negative) color = 255 - color;
-                data[i] = color;
-                data[i + 1] = color;
-                data[i + 2] = color;
+            if (rect.width <= 0 || rect.height <= 0 || rect.scaleX <= 0 || rect.scaleY <= 0) {
+                return '';
             }
-            tempCtx.putImageData(imageData, 0, 0);
-            return tempCanvas.toDataURL();
+
+            let src = null;
+            let dst = null;
+            try {
+                // 選択範囲のImageDataを取得
+                const originalImageData = mainContext.getImageData(rect.x, rect.y, rect.width, rect.height);
+                src = cv.matFromImageData(originalImageData);
+                dst = new cv.Mat();
+
+                // 画像をリサイズ
+                const dsize = new cv.Size(Math.round(rect.width * rect.scaleX), Math.round(rect.height * rect.scaleY));
+                cv.resize(src, dst, dsize, 0, 0, cv.INTER_LANCZOS4);
+
+                // グレースケールに変換
+                cv.cvtColor(dst, dst, cv.COLOR_RGBA2GRAY, 0);
+
+                // 2値化（ネガポジ反転も考慮）
+                const thresholdType = rect.negative ? cv.THRESH_BINARY_INV : cv.THRESH_BINARY;
+                cv.threshold(dst, dst, rect.threshold, 255, thresholdType);
+
+                // 結果をCanvasに描画してDataURLを取得
+                const tempCanvas = document.createElement('canvas');
+                cv.imshow(tempCanvas, dst);
+                return tempCanvas.toDataURL();
+            } finally {
+                // メモリリークを防ぐためにMatオブジェクトを解放
+                src?.delete();
+                dst?.delete();
+            }
         });
         setProcessedImages(urls);
 
-    }, [selections, capturedImage]);
+    }, [selections, capturedImage, isCvReady]);
 
     const compareImageData = (d1: Uint8ClampedArray, d2: Uint8ClampedArray) => {
         let diff = 0;

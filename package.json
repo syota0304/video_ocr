@@ -14,6 +14,7 @@
     "@ffmpeg.wasm/main": "^0.13.1",
     "@ffmpeg/ffmpeg": "^0.12.15",
     "@ffmpeg/util": "^0.12.2",
+    "@techstark/opencv-js": "^4.11.0-release.1",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "tesseract.js": "^6.0.1"
