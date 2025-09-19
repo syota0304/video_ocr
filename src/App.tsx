@@ -3,6 +3,34 @@ import './App.css';
 import Tesseract from 'tesseract.js';
 import cvReadyPromise from "@techstark/opencv-js";
 
+const getLevenshteinDistance = (a: string, b: string): number => {
+    if (a.length === 0) return b.length;
+    if (b.length === 0) return a.length;
+
+    const matrix = Array(b.length + 1).fill(null).map(() => Array(a.length + 1).fill(null));
+
+    for (let i = 0; i <= a.length; i++) {
+        matrix[0][i] = i;
+    }
+
+    for (let j = 0; j <= b.length; j++) {
+        matrix[j][0] = j;
+    }
+
+    for (let j = 1; j <= b.length; j++) {
+        for (let i = 1; i <= a.length; i++) {
+            const substitutionCost = a[i - 1] === b[j - 1] ? 0 : 1;
+            matrix[j][i] = Math.min(
+                matrix[j][i - 1] + 1, // deletion
+                matrix[j - 1][i] + 1, // insertion
+                matrix[j - 1][i - 1] + substitutionCost // substitution
+            );
+        }
+    }
+
+    return matrix[b.length][a.length];
+};
+
 interface SelectionRect {
     label: string;
     x: number;
@@ -23,7 +51,7 @@ const defaultSelection: SelectionRect = {
     height: 100,
     threshold: 150,
     scaleX: 3,
-    scaleY: 3,
+    scaleY: 5,
     negative: true,
 };
 
@@ -100,6 +128,9 @@ export function App() {
     const [endPoint, setEndPoint] = useState<{ x: number; y: number } | null>(null);
     const [selections, setSelections] = useState<SelectionRect[]>(defaultSelections);
     const [ocrResults, setOcrResults] = useState<string[]>([]);
+    const [selectedCorrections, setSelectedCorrections] = useState<(string | null)[]>([]);
+    const [selectedCorrectionIds, setSelectedCorrectionIds] = useState<(number | null)[]>([]);
+    const [correctionSuggestions, setCorrectionSuggestions] = useState<Array<Array<{ title: string, id: number, distance: number }>>>([]);
     const [isOcrRunning, setIsOcrRunning] = useState(false);
     const [processedImages, setProcessedImages] = useState<string[]>([]);
     const [redrawIndex, setRedrawIndex] = useState<number | null>(null);
@@ -114,6 +145,15 @@ export function App() {
     const [perspectivePoints, setPerspectivePoints] = useState<{ x: number, y: number }[]>(defaultPerspectivePoints);
     const [isSettingPerspective, setIsSettingPerspective] = useState(false);
 
+    // State for master data
+    type MasterData = {
+        title: string,
+        id: number,
+    }
+    const [titleMasterData, setTitleMasterData] = useState<MasterData[]>([]);
+    const [showMasterDataInput, setShowMasterDataInput] = useState(true);
+    const [masterDataJson, setMasterDataJson] = useState('');
+
 
     const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
         const file = event.target.files?.[0];
@@ -123,6 +163,9 @@ export function App() {
             setCapturedImage(null);
             setSelections(defaultSelections);
             setOcrResults([]);
+            setSelectedCorrections([]);
+            setSelectedCorrectionIds([]);
+            setCorrectionSuggestions([]);
             setProcessedImages([]);
             setRedrawIndex(null);
             setIsSeeking(false);
@@ -185,6 +228,9 @@ export function App() {
                     setCapturedImage(frameImageData);
                 }
                 setOcrResults([]);
+                setSelectedCorrections([]);
+                setSelectedCorrectionIds([]);
+                setCorrectionSuggestions([]);
                 setProcessedImages([]);
             }
         }
@@ -275,6 +321,28 @@ export function App() {
         setIsSettingPerspective(true);
     }
 
+    const handleLoadMasterData = () => {
+        if (!masterDataJson.trim()) {
+            alert('JSONデータを貼り付けてください。');
+            return;
+        }
+        try {
+            const data = (JSON.parse(masterDataJson)).data.music;
+            console.log(data)
+            // Basic validation: check if it's an array of strings
+            if (Array.isArray(data) && data.every(item => typeof item === 'object')) {
+                setTitleMasterData(data);
+                setShowMasterDataInput(false);
+                alert('マスタデータの読み込みに成功しました！');
+            } else {
+                alert('不正なJSONフォーマットです。');
+            }
+        } catch (error) {
+            console.error('Failed to parse master data JSON:', error);
+            alert('JSONの解析に失敗しました。フォーマットを確認してください。');
+        }
+    };
+
     const handleSelectionParamChange = (indexToChange: number, param: keyof SelectionRect, value: string | number | boolean) => {
         const updatedSelections = selections.map((selection, index) => {
             if (index === indexToChange) {
@@ -324,6 +392,84 @@ export function App() {
             setIsOcrRunning(false);
         }
     }, [processedImages, selections, isOcrRunning]);
+
+    useEffect(() => {
+        if (ocrResults.length === 0 || titleMasterData.length === 0) {
+            setCorrectionSuggestions([]);
+            setSelectedCorrectionIds([]);
+            setSelectedCorrections([]);
+            return;
+        }
+
+        const performSimpleCorrection = (text: string): string => {
+            if (!text) return '';
+            text = text
+                .replace(/I/g, '1')
+                .replace(/i/g, '1')
+                .replace(/l/g, '1')
+                .replace(/\|/g, '1')
+                .replace(/Z/g, '2')
+                .replace(/A/g, '4')
+                .replace(/q/g, '4')
+                .replace(/S/g, '5')
+                .replace(/b/g, '6')
+                .replace(/G/g, '6')
+                .replace(/o/g, '0')
+                .replace(/O/g, '0');
+
+            if(!text.includes('.')){
+                text = text.replace(/(.*) /, "$1.")
+            }
+
+            text = text.replace(/[^0-9.]/g, "")
+
+            if(!text.includes('.')){
+                const insertIndex = text.length - 2; // 5 - 2 = 3
+
+                const firstPart = text.slice(0, insertIndex); // "abc"
+                const secondPart = text.slice(insertIndex); // "de"
+
+                text = firstPart + "." + secondPart; // "abcXYZde"
+            }
+
+            if(text.indexOf(".") > 3){
+                const length = text.indexOf(".")
+                text = text.slice(length - 3)
+            }
+
+            if(text.slice(text.indexOf("."), text.length).length  > 3){
+                text = text.slice(0, text.indexOf(".") + 3)
+            }
+
+            return text;
+        };
+
+        const newSuggestions: Array<Array<{ title: string, id: number, distance: number }>> = Array.from({length: selections.length}, () => []);
+        const newSelectedCorrections: (string | null)[] = Array(selections.length).fill(null);
+        const newSelectedCorrectionIds: (number | null)[] = Array(selections.length).fill(null);
+
+        ocrResults.forEach((ocrText, index) => {
+            const selectionLabel = selections[index]?.label;
+            if (selectionLabel === 'TITLE' && ocrText.trim() && titleMasterData.length > 0) {
+                const suggestions = titleMasterData.map(masterItem => ({
+                    title: masterItem.title,
+                    id: masterItem.id,
+                    distance: getLevenshteinDistance(ocrText.trim(), masterItem.title)
+                })).sort((a, b) => a.distance - b.distance).slice(0, 10);
+
+                newSuggestions[index] = suggestions;
+                newSelectedCorrections[index] = suggestions[0]?.title || ''; // Set best match as default
+                newSelectedCorrectionIds[index] = suggestions[0]?.id ?? null;
+            } else if (['NOTES', 'CHORD', 'PEAK', 'CHARGE', 'SOF-LAN', 'SCRATCH'].includes(selectionLabel)) {
+                newSelectedCorrections[index] = performSimpleCorrection(ocrText);
+            }
+        });
+
+        setCorrectionSuggestions(newSuggestions);
+        setSelectedCorrections(newSelectedCorrections);
+        setSelectedCorrectionIds(newSelectedCorrectionIds);
+
+    }, [ocrResults, titleMasterData, selections]);
 
     // Effect for Keyboard Shortcuts
     useEffect(() => {
@@ -542,6 +688,23 @@ export function App() {
         <div className="App">
             <header className="App-header">
                 <h1>Video OCR</h1>
+                {showMasterDataInput && (
+                    <div style={{
+                        margin: '10px 0',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '10px',
+                        maxWidth: '700px',
+                        width: '100%'
+                    }}>
+                        <a href={"https://asia-northeast1-iidx-viewer.cloudfunctions.net/getMasterData"} target={"_blank"}>マスタデータ</a>
+                        <textarea rows={5}
+                                  placeholder='上記リンクの内容をすべて選択してコピペしてください'
+                                  value={masterDataJson} onChange={(e) => setMasterDataJson(e.target.value)}
+                                  style={{width: '100%', padding: '5px'}}/>
+                        <button onClick={handleLoadMasterData} style={{alignSelf: 'flex-start'}}>マスタデータを読み込む</button>
+                    </div>
+                )}
                 <input type="file" accept="video/*" onChange={handleFileChange}/>
                 {videoSrc && (
                     <div>
@@ -624,7 +787,6 @@ export function App() {
                                        style={{width: '100%', maxWidth: '700px', borderCollapse: 'collapse'}}>
                                     <thead>
                                     <tr>
-                                        <th>#</th>
                                         <th>Label</th>
                                         <th>Action</th>
                                         <th>X</th>
@@ -636,13 +798,20 @@ export function App() {
                                         <th>Scale Y</th>
                                         <th>Processed Image</th>
                                         <th>OCR Result</th>
+                                        <th>補正値</th>
                                     </tr>
                                     </thead>
                                     <tbody>
-                                    {selections.map((rect, index) => (
-                                        <tr key={index}
-                                            style={{backgroundColor: redrawIndex === index ? '#f0f0f0' : 'transparent'}}>
-                                            <td>{index + 1}</td>
+                                    {selections.map((rect, index) => {
+                                        const currentCorrection = selectedCorrections[index] ?? '';
+                                        const manualSuggestions = currentCorrection.length > 1
+                                            ? titleMasterData
+                                                .filter(item => item.title.toLowerCase().includes(currentCorrection.toLowerCase()))
+                                                .slice(0, 10)
+                                            : [];
+
+                                        return (
+                                            <tr key={index}>
                                             <td>
                                                 {rect.label}
                                             </td>
@@ -673,15 +842,82 @@ export function App() {
                                                        min={0.1} step={0.1} style={{width: '50px'}}/>
                                             </td>
                                             <td>
-                                                {processedImages[index] &&
-                                                    <img src={processedImages[index]}
-                                                         alt={`Processed selection ${index + 1}`}
-                                                         style={{height: '40px'}}/>
+                                                <div style={{width: "350px", overflowX: "auto", whiteSpace: "nowrap"}}>
+                                                    {processedImages[index] &&
+                                                        <img src={processedImages[index]}
+                                                             alt={`Processed selection ${index + 1}`}
+                                                        />
+                                                    }
+                                                </div>
+                                            </td>
+                                            <td style={{whiteSpace: "nowrap"}}>{ocrResults[index] || ''}</td>
+                                            <td>
+                                                {selections[index].label === 'TITLE' ? (
+                                                    <div style={{display: 'flex', flexDirection: 'column', gap: '5px'}}>
+                                                        {correctionSuggestions[index]?.length > 0 && (
+                                                            <select
+                                                                value={selectedCorrectionIds[index] ?? ''}
+                                                                onChange={(e) => {
+                                                                    const newId = parseInt(e.target.value, 10);
+                                                                    const selectedItem = titleMasterData.find(item => item.id === newId);
+                                                                    if (selectedItem) {
+                                                                        const newSelected = [...selectedCorrections];
+                                                                        newSelected[index] = selectedItem.title;
+                                                                        setSelectedCorrections(newSelected);
+
+                                                                        const newIds = [...selectedCorrectionIds];
+                                                                        newIds[index] = selectedItem.id;
+                                                                        setSelectedCorrectionIds(newIds);
+                                                                    }
+                                                                }}
+                                                            >
+                                                                {correctionSuggestions[index]?.map((suggestion) => (
+                                                                    <option key={suggestion.id} value={suggestion.id}>
+                                                                        {suggestion.title} (dist: {suggestion.distance})
+                                                                    </option>
+                                                                ))}
+                                                            </select>
+                                                        )}
+                                                        <input
+                                                            type="text"
+                                                            list={`manual-suggestions-${index}`}
+                                                            placeholder="または手動で入力"
+                                                            value={currentCorrection}
+                                                            onChange={(e) => {
+                                                                const newSelected = [...selectedCorrections];
+                                                                const newTitle = e.target.value;
+                                                                newSelected[index] = newTitle;
+                                                                setSelectedCorrections(newSelected);
+
+                                                                const newIds = [...selectedCorrectionIds];
+                                                                const matchedItem = titleMasterData.find(item => item.title === newTitle);
+                                                                newIds[index] = matchedItem?.id ?? null;
+                                                                setSelectedCorrectionIds(newIds);
+                                                            }}
+                                                        />
+                                                        <datalist id={`manual-suggestions-${index}`}>
+                                                            {manualSuggestions.map((suggestion) => (
+                                                                <option key={suggestion.id} value={suggestion.title}/>
+                                                            ))}
+                                                        </datalist>
+                                                    </div>
+                                                ) : (
+                                                    <input
+                                                        type="text"
+                                                        value={selectedCorrections[index] || ''}
+                                                        onChange={(e) => {
+                                                            const newSelected = [...selectedCorrections];
+                                                            newSelected[index] = e.target.value;
+                                                            setSelectedCorrections(newSelected);
+                                                        }}
+                                                        style={{maxWidth: '300px', width: '100%'}}
+                                                    />
+                                                )
                                                 }
                                             </td>
-                                            <td>{ocrResults[index] || ''}</td>
                                         </tr>
-                                    ))}
+                                        );
+                                    })}
                                     </tbody>
                                 </table>
                             </div>
