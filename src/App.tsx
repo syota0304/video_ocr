@@ -94,18 +94,18 @@ const defaultSelections: SelectionRect[] = [
         height: 21,
     },
     {
-        label: 'SOF-LAN',
+        label: 'SCRATCH',
         x: 509,
         y: 526,
-        width: 107,
-        height: 23,
-    },
-    {
-        label: 'SCRATCH',
-        x: 828,
-        y: 527,
         width: 104,
         height: 22,
+    },
+    {
+        label: 'SOF-LAN',
+        x: 828,
+        y: 527,
+        width: 107,
+        height: 23,
     },
 ].map(e => ({...defaultSelection, ...e,}))
 
@@ -115,6 +115,16 @@ const defaultPerspectivePoints = [
     {x: 1462, y: 916},
     {x: 446, y: 1013},
 ]
+
+type outputData = {
+    musicId: number;
+    notes: number;
+    chord: number;
+    peak: number;
+    charge: number;
+    scratch: number;
+    soflan: number;
+}
 
 export function App() {
     const [videoSrc, setVideoSrc] = useState<string | null>(null);
@@ -144,6 +154,7 @@ export function App() {
     // State for perspective transform
     const [perspectivePoints, setPerspectivePoints] = useState<{ x: number, y: number }[]>(defaultPerspectivePoints);
     const [isSettingPerspective, setIsSettingPerspective] = useState(false);
+    const [outputData, setOutputData] = useState<outputData[]>([]);
 
     // State for master data
     type MasterData = {
@@ -170,6 +181,7 @@ export function App() {
             setRedrawIndex(null);
             setIsSeeking(false);
             setPerspectivePoints(defaultPerspectivePoints);
+            setOutputData([]);
             setIsSettingPerspective(false);
         }
     };
@@ -351,6 +363,59 @@ export function App() {
             return selection;
         });
         setSelections(updatedSelections);
+    };
+
+    const handleAddToOutput = () => {
+        const getCorrectionValue = (label: string): string | null => {
+            const index = selections.findIndex(s => s.label === label);
+            return index !== -1 ? selectedCorrections[index] : null;
+        };
+
+        const getCorrectionId = (label: string): number | null => {
+            const index = selections.findIndex(s => s.label === label);
+            return index !== -1 ? selectedCorrectionIds[index] : null;
+        }
+
+        const musicId = getCorrectionId('TITLE');
+        if (musicId === null) {
+            alert('TITLEが選択されていません。');
+            return;
+        }
+
+        // Check for duplicates
+        if (outputData.some(item => item.musicId === musicId)) {
+            alert(`Music ID ${musicId} は既に追加されています。`);
+            return;
+        }
+
+        const newOutput: outputData = {
+            musicId: musicId,
+            notes: parseFloat(getCorrectionValue('NOTES') || '0'),
+            chord: parseFloat(getCorrectionValue('CHORD') || '0'),
+            peak: parseFloat(getCorrectionValue('PEAK') || '0'),
+            charge: parseFloat(getCorrectionValue('CHARGE') || '0'),
+            scratch: parseFloat(getCorrectionValue('SCRATCH') || '0'),
+            soflan: parseFloat(getCorrectionValue('SOF-LAN') || '0'),
+        };
+
+        setOutputData(prev => [...prev, newOutput].sort((a, b) => a.musicId - b.musicId));
+    };
+
+    const handleDownloadJson = () => {
+        if (outputData.length === 0) {
+            alert('ダウンロードするデータがありません。');
+            return;
+        }
+        const jsonString = JSON.stringify({data: outputData}, null, 2);
+        const blob = new Blob([jsonString], {type: 'application/json'});
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'output.json';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
     };
 
     const handleSeek = useCallback((seconds: number) => {
@@ -758,6 +823,9 @@ export function App() {
                                             style={{marginLeft: '10px'}}>
                                         {isOcrRunning ? 'Processing...' : 'Run OCR (Space)'}
                                     </button>
+                                    <button onClick={handleAddToOutput} style={{marginLeft: '10px'}}>
+                                        出力に追加
+                                    </button>
                                 </>
                             )}
                         </div>
@@ -812,110 +880,110 @@ export function App() {
 
                                         return (
                                             <tr key={index}>
-                                            <td>
-                                                {rect.label}
-                                            </td>
-                                            <td style={{textAlign: 'center'}}>
-                                                <button onClick={() => handleRedraw(index)}
-                                                        disabled={(redrawIndex !== null && redrawIndex !== index) || isSeeking || isSettingPerspective}
-                                                        style={{marginLeft: '5px'}}>
-                                                    {redrawIndex === index ? '範囲設定中' : '範囲設定'}
-                                                </button>
-                                            </td>
-                                            <td>{rect.x.toFixed(0)}</td>
-                                            <td>{rect.y.toFixed(0)}</td>
-                                            <td>{rect.width.toFixed(0)}</td>
-                                            <td>{rect.height.toFixed(0)}</td>
-                                            <td>
-                                                <input type="number" value={rect.threshold}
-                                                       onChange={(e) => handleSelectionParamChange(index, 'threshold', parseInt(e.target.value, 10))}
-                                                       min={0} max={255} style={{width: '50px'}}/>
-                                            </td>
-                                            <td>
-                                                <input type="number" value={rect.scaleX}
-                                                       onChange={(e) => handleSelectionParamChange(index, 'scaleX', parseFloat(e.target.value))}
-                                                       min={0.1} step={0.1} style={{width: '50px'}}/>
-                                            </td>
-                                            <td>
-                                                <input type="number" value={rect.scaleY}
-                                                       onChange={(e) => handleSelectionParamChange(index, 'scaleY', parseFloat(e.target.value))}
-                                                       min={0.1} step={0.1} style={{width: '50px'}}/>
-                                            </td>
-                                            <td>
-                                                <div style={{width: "350px", overflowX: "auto", whiteSpace: "nowrap"}}>
-                                                    {processedImages[index] &&
-                                                        <img src={processedImages[index]}
-                                                             alt={`Processed selection ${index + 1}`}
-                                                        />
-                                                    }
-                                                </div>
-                                            </td>
-                                            <td style={{whiteSpace: "nowrap"}}>{ocrResults[index] || ''}</td>
-                                            <td>
-                                                {selections[index].label === 'TITLE' ? (
-                                                    <div style={{display: 'flex', flexDirection: 'column', gap: '5px'}}>
-                                                        {correctionSuggestions[index]?.length > 0 && (
-                                                            <select
-                                                                value={selectedCorrectionIds[index] ?? ''}
-                                                                onChange={(e) => {
-                                                                    const newId = parseInt(e.target.value, 10);
-                                                                    const selectedItem = titleMasterData.find(item => item.id === newId);
-                                                                    if (selectedItem) {
-                                                                        const newSelected = [...selectedCorrections];
-                                                                        newSelected[index] = selectedItem.title;
-                                                                        setSelectedCorrections(newSelected);
+                                                <td>
+                                                    {rect.label}
+                                                </td>
+                                                <td style={{textAlign: 'center'}}>
+                                                    <button onClick={() => handleRedraw(index)}
+                                                            disabled={(redrawIndex !== null && redrawIndex !== index) || isSeeking || isSettingPerspective}
+                                                            style={{marginLeft: '5px'}}>
+                                                        {redrawIndex === index ? '範囲設定中' : '範囲設定'}
+                                                    </button>
+                                                </td>
+                                                <td>{rect.x.toFixed(0)}</td>
+                                                <td>{rect.y.toFixed(0)}</td>
+                                                <td>{rect.width.toFixed(0)}</td>
+                                                <td>{rect.height.toFixed(0)}</td>
+                                                <td>
+                                                    <input type="number" value={rect.threshold}
+                                                           onChange={(e) => handleSelectionParamChange(index, 'threshold', parseInt(e.target.value, 10))}
+                                                           min={0} max={255} style={{width: '50px'}}/>
+                                                </td>
+                                                <td>
+                                                    <input type="number" value={rect.scaleX}
+                                                           onChange={(e) => handleSelectionParamChange(index, 'scaleX', parseFloat(e.target.value))}
+                                                           min={0.1} step={0.1} style={{width: '50px'}}/>
+                                                </td>
+                                                <td>
+                                                    <input type="number" value={rect.scaleY}
+                                                           onChange={(e) => handleSelectionParamChange(index, 'scaleY', parseFloat(e.target.value))}
+                                                           min={0.1} step={0.1} style={{width: '50px'}}/>
+                                                </td>
+                                                <td>
+                                                    <div style={{width: "350px", overflowX: "auto", whiteSpace: "nowrap"}}>
+                                                        {processedImages[index] &&
+                                                            <img src={processedImages[index]}
+                                                                 alt={`Processed selection ${index + 1}`}
+                                                            />
+                                                        }
+                                                    </div>
+                                                </td>
+                                                <td style={{whiteSpace: "nowrap"}}>{ocrResults[index] || ''}</td>
+                                                <td>
+                                                    {selections[index].label === 'TITLE' ? (
+                                                        <div style={{display: 'flex', flexDirection: 'column', gap: '5px'}}>
+                                                            {correctionSuggestions[index]?.length > 0 && (
+                                                                <select
+                                                                    value={selectedCorrectionIds[index] ?? ''}
+                                                                    onChange={(e) => {
+                                                                        const newId = parseInt(e.target.value, 10);
+                                                                        const selectedItem = titleMasterData.find(item => item.id === newId);
+                                                                        if (selectedItem) {
+                                                                            const newSelected = [...selectedCorrections];
+                                                                            newSelected[index] = selectedItem.title;
+                                                                            setSelectedCorrections(newSelected);
 
-                                                                        const newIds = [...selectedCorrectionIds];
-                                                                        newIds[index] = selectedItem.id;
-                                                                        setSelectedCorrectionIds(newIds);
-                                                                    }
+                                                                            const newIds = [...selectedCorrectionIds];
+                                                                            newIds[index] = selectedItem.id;
+                                                                            setSelectedCorrectionIds(newIds);
+                                                                        }
+                                                                    }}
+                                                                >
+                                                                    {correctionSuggestions[index]?.map((suggestion) => (
+                                                                        <option key={suggestion.id} value={suggestion.id}>
+                                                                            {suggestion.title} (dist: {suggestion.distance})
+                                                                        </option>
+                                                                    ))}
+                                                                </select>
+                                                            )}
+                                                            <input
+                                                                type="text"
+                                                                list={`manual-suggestions-${index}`}
+                                                                placeholder="または手動で入力"
+                                                                value={currentCorrection}
+                                                                onChange={(e) => {
+                                                                    const newSelected = [...selectedCorrections];
+                                                                    const newTitle = e.target.value;
+                                                                    newSelected[index] = newTitle;
+                                                                    setSelectedCorrections(newSelected);
+
+                                                                    const newIds = [...selectedCorrectionIds];
+                                                                    const matchedItem = titleMasterData.find(item => item.title === newTitle);
+                                                                    newIds[index] = matchedItem?.id ?? null;
+                                                                    setSelectedCorrectionIds(newIds);
                                                                 }}
-                                                            >
-                                                                {correctionSuggestions[index]?.map((suggestion) => (
-                                                                    <option key={suggestion.id} value={suggestion.id}>
-                                                                        {suggestion.title} (dist: {suggestion.distance})
-                                                                    </option>
+                                                            />
+                                                            <datalist id={`manual-suggestions-${index}`}>
+                                                                {manualSuggestions.map((suggestion) => (
+                                                                    <option key={suggestion.id} value={suggestion.title}/>
                                                                 ))}
-                                                            </select>
-                                                        )}
+                                                            </datalist>
+                                                        </div>
+                                                    ) : (
                                                         <input
                                                             type="text"
-                                                            list={`manual-suggestions-${index}`}
-                                                            placeholder="または手動で入力"
-                                                            value={currentCorrection}
+                                                            value={selectedCorrections[index] || ''}
                                                             onChange={(e) => {
                                                                 const newSelected = [...selectedCorrections];
-                                                                const newTitle = e.target.value;
-                                                                newSelected[index] = newTitle;
+                                                                newSelected[index] = e.target.value;
                                                                 setSelectedCorrections(newSelected);
-
-                                                                const newIds = [...selectedCorrectionIds];
-                                                                const matchedItem = titleMasterData.find(item => item.title === newTitle);
-                                                                newIds[index] = matchedItem?.id ?? null;
-                                                                setSelectedCorrectionIds(newIds);
                                                             }}
+                                                            style={{maxWidth: '300px', width: '100%'}}
                                                         />
-                                                        <datalist id={`manual-suggestions-${index}`}>
-                                                            {manualSuggestions.map((suggestion) => (
-                                                                <option key={suggestion.id} value={suggestion.title}/>
-                                                            ))}
-                                                        </datalist>
-                                                    </div>
-                                                ) : (
-                                                    <input
-                                                        type="text"
-                                                        value={selectedCorrections[index] || ''}
-                                                        onChange={(e) => {
-                                                            const newSelected = [...selectedCorrections];
-                                                            newSelected[index] = e.target.value;
-                                                            setSelectedCorrections(newSelected);
-                                                        }}
-                                                        style={{maxWidth: '300px', width: '100%'}}
-                                                    />
-                                                )
-                                                }
-                                            </td>
-                                        </tr>
+                                                    )
+                                                    }
+                                                </td>
+                                            </tr>
                                         );
                                     })}
                                     </tbody>
@@ -934,6 +1002,23 @@ export function App() {
                             onMouseUp={handleMouseUp}
                             onMouseLeave={handleMouseUp}
                         />
+                    </div>
+                )}
+
+                {outputData.length > 0 && (
+                    <div style={{marginTop: '20px', width: '100%', maxWidth: '700px'}}>
+                        <h3>Output Data</h3>
+                        <textarea
+                            readOnly
+                            rows={10}
+                            value={JSON.stringify({data: outputData}, null, 2)}
+                            style={{width: '100%', fontFamily: 'monospace'}}
+                        />
+                        <>
+                            <button onClick={handleDownloadJson} style={{marginTop: '5px'}}>
+                                JSONをダウンロード
+                            </button>
+                        </>
                     </div>
                 )}
             </header>
