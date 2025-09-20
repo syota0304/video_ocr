@@ -140,21 +140,31 @@ export function App() {
     const [ocrResults, setOcrResults] = useState<string[]>([]);
     const [selectedCorrections, setSelectedCorrections] = useState<(string | null)[]>([]);
     const [selectedCorrectionIds, setSelectedCorrectionIds] = useState<(number | null)[]>([]);
-    const [correctionSuggestions, setCorrectionSuggestions] = useState<Array<Array<{ title: string, id: number, distance: number }>>>([]);
+    const [correctionSuggestions, setCorrectionSuggestions] = useState<Array<Array<{
+        title: string,
+        id: number,
+        distance: number
+    }>>>([]);
     const [isOcrRunning, setIsOcrRunning] = useState(false);
     const [processedImages, setProcessedImages] = useState<string[]>([]);
     const [redrawIndex, setRedrawIndex] = useState<number | null>(null);
+    const [isSeeking, setIsSeeking] = useState(false);
+    const [skipFramesAfterChange, setSkipFramesAfterChange] = useState(2);
+    const [autoOcrAfterChange, setAutoOcrAfterChange] = useState(true);
+    const [shouldRunOcr, setShouldRunOcr] = useState(false);
+    const [diffThreshold, setDiffThreshold] = useState(20);
+    const isSeekingRef = useRef(false);
 
     const cvRef = useRef<any>(null);
     const [isCvReady, setIsCvReady] = useState(false);
-    // State for auto-seeking
-    const [isSeeking, setIsSeeking] = useState(false);
-    const [diffThreshold, setDiffThreshold] = useState(20); // Default difference sensitivity
-    const referenceImageData = useRef<ImageData | null>(null);
     // State for perspective transform
     const [perspectivePoints, setPerspectivePoints] = useState<{ x: number, y: number }[]>(defaultPerspectivePoints);
     const [isSettingPerspective, setIsSettingPerspective] = useState(false);
     const [outputData, setOutputData] = useState<outputData[]>([]);
+
+    const [addOutputMessage, setAddOutputMessage] = useState('');
+    const [addOutputMessageType, setAddOutputMessageType] = useState<'success' | 'error'>('success');
+    const [correctionInputErrors, setCorrectionInputErrors] = useState<string[]>([]);
 
     // State for master data
     type MasterData = {
@@ -176,10 +186,13 @@ export function App() {
             setOcrResults([]);
             setSelectedCorrections([]);
             setSelectedCorrectionIds([]);
+            setCorrectionInputErrors([]);
             setCorrectionSuggestions([]);
             setProcessedImages([]);
             setRedrawIndex(null);
             setIsSeeking(false);
+            isSeekingRef.current = false;
+            setShouldRunOcr(false);
             setPerspectivePoints(defaultPerspectivePoints);
             setOutputData([]);
             setIsSettingPerspective(false);
@@ -340,7 +353,6 @@ export function App() {
         }
         try {
             const data = (JSON.parse(masterDataJson)).data.music;
-            console.log(data)
             // Basic validation: check if it's an array of strings
             if (Array.isArray(data) && data.every(item => typeof item === 'object')) {
                 setTitleMasterData(data);
@@ -365,7 +377,9 @@ export function App() {
         setSelections(updatedSelections);
     };
 
-    const handleAddToOutput = () => {
+    const handleAddToOutput = useCallback(() => {
+        const newErrors = Array(selections.length).fill('');
+
         const getCorrectionValue = (label: string): string | null => {
             const index = selections.findIndex(s => s.label === label);
             return index !== -1 ? selectedCorrections[index] : null;
@@ -374,32 +388,136 @@ export function App() {
         const getCorrectionId = (label: string): number | null => {
             const index = selections.findIndex(s => s.label === label);
             return index !== -1 ? selectedCorrectionIds[index] : null;
-        }
+        };
 
         const musicId = getCorrectionId('TITLE');
+        const titleIndex = selections.findIndex(s => s.label === 'TITLE');
         if (musicId === null) {
-            alert('TITLEが選択されていません。');
+            if (titleIndex !== -1) {
+                newErrors[titleIndex] = 'TITLEが選択されていません。';
+            }
+        }
+
+        // Validation for numeric fields
+        const fieldsToValidate = ['NOTES', 'CHORD', 'PEAK', 'CHARGE', 'SCRATCH', 'SOF-LAN'];
+        const validatedValues: { [key: string]: number } = {};
+
+        for (const label of fieldsToValidate) {
+            const valueStr = getCorrectionValue(label);
+            const value = parseFloat(valueStr || '0');
+            const fieldIndex = selections.findIndex(s => s.label === label);
+
+            if (fieldIndex !== -1 && (isNaN(value) || value < 0.00 || value > 200.00)) {
+                newErrors[fieldIndex] = '0.00から200.00の間の数値を入力してください。';
+            } else if (fieldIndex !== -1 && valueStr !== null && !(/^\d{1,3}\.\d{2}$/.test(valueStr))) {
+                newErrors[fieldIndex] = 'XXX.XXの形式で入力してください。';
+            } else {
+                validatedValues[label.replace('-', '').toLowerCase()] = value;
+            }
+        }
+
+        if (newErrors.some(e => e !== '')) {
+            setCorrectionInputErrors(newErrors);
+            setTimeout(() => setCorrectionInputErrors(Array(selections.length).fill('')), 3000);
             return;
         }
 
+        const title = titleIndex !== -1 ? selectedCorrections[titleIndex] : '';
+
         // Check for duplicates
         if (outputData.some(item => item.musicId === musicId)) {
-            alert(`Music ID ${musicId} は既に追加されています。`);
+            setAddOutputMessageType('error');
+            setAddOutputMessage(`Music ID ${musicId} は既に追加されています。`);
+            setTimeout(() => setAddOutputMessage(''), 3000);
             return;
         }
 
         const newOutput: outputData = {
             musicId: musicId,
-            notes: parseFloat(getCorrectionValue('NOTES') || '0'),
-            chord: parseFloat(getCorrectionValue('CHORD') || '0'),
-            peak: parseFloat(getCorrectionValue('PEAK') || '0'),
-            charge: parseFloat(getCorrectionValue('CHARGE') || '0'),
-            scratch: parseFloat(getCorrectionValue('SCRATCH') || '0'),
-            soflan: parseFloat(getCorrectionValue('SOF-LAN') || '0'),
+            notes: validatedValues.notes,
+            chord: validatedValues.chord,
+            peak: validatedValues.peak,
+            charge: validatedValues.charge,
+            scratch: validatedValues.scratch,
+            soflan: validatedValues.soflan,
         };
 
         setOutputData(prev => [...prev, newOutput].sort((a, b) => a.musicId - b.musicId));
+
+        if (title) {
+            setAddOutputMessageType('success');
+            setAddOutputMessage(`${title}を追加しました`);
+            setTimeout(() => setAddOutputMessage(''), 3000);
+        }
+    }, [selections, selectedCorrections, selectedCorrectionIds, outputData]);
+
+    const compareImageData = (d1: Uint8ClampedArray, d2: Uint8ClampedArray) => {
+        let diff = 0;
+        for (let i = 0; i < d1.length; i += 4) {
+            const gray1 = (d1[i] + d1[i + 1] + d1[i + 2]) / 3;
+            const gray2 = (d2[i] + d2[i + 1] + d2[i + 2]) / 3;
+            diff += Math.abs(gray1 - gray2);
+        }
+        return diff / (d1.length / 4);
     };
+
+    const findNextChange = useCallback(async () => {
+        const video = videoRef.current;
+        const mainCtx = canvasRef.current?.getContext('2d', {willReadFrequently: true});
+        if (!video || !mainCtx || selections.length === 0) return;
+
+        const seekFrame = async () => {
+            video.currentTime += (1 / frameRate);
+            await new Promise(resolve => {
+                const onSeeked = () => {
+                    video.removeEventListener('seeked', onSeeked);
+                    resolve(null);
+                };
+                video.addEventListener('seeked', onSeeked);
+            });
+        };
+
+        const referenceImageDatas = selections.map(rect => {
+            return mainCtx.getImageData(rect.x, rect.y, rect.width, rect.height);
+        });
+
+        let changeDetected = false;
+        while (isSeekingRef.current && !video.ended) {
+            await seekFrame();
+
+            if (!isSeekingRef.current) break;
+
+            const hasChanged = selections.some((rect, index) => {
+                const newImageData = mainCtx.getImageData(rect.x, rect.y, rect.width, rect.height);
+                const diff = compareImageData(referenceImageDatas[index].data, newImageData.data);
+                return diff > diffThreshold;
+            });
+
+            if (hasChanged) {
+                changeDetected = true;
+                break;
+            }
+        }
+
+        if (isSeekingRef.current && changeDetected) {
+            // Skip frames to let the transition finish
+            for (let i = 0; i < skipFramesAfterChange; i++) {
+                if (!isSeekingRef.current || video.ended) break;
+                await seekFrame();
+            }
+
+            if (isSeekingRef.current) { // Check again in case user stopped during skip
+                captureFrame();
+                if (autoOcrAfterChange) {
+                    setShouldRunOcr(true);
+                }
+            }
+        } else if (isSeekingRef.current) { // Stopped because video ended
+            captureFrame();
+        }
+        setIsSeeking(false);
+        isSeekingRef.current = false;
+    }, [selections, frameRate, diffThreshold, captureFrame, skipFramesAfterChange, autoOcrAfterChange]);
 
     const handleDownloadJson = () => {
         if (outputData.length === 0) {
@@ -459,6 +577,13 @@ export function App() {
     }, [processedImages, selections, isOcrRunning]);
 
     useEffect(() => {
+        if (shouldRunOcr && processedImages.length > 0 && !isOcrRunning) {
+            runOCR();
+            setShouldRunOcr(false);
+        }
+    }, [shouldRunOcr, processedImages, isOcrRunning, runOCR]);
+
+    useEffect(() => {
         if (ocrResults.length === 0 || titleMasterData.length === 0) {
             setCorrectionSuggestions([]);
             setSelectedCorrectionIds([]);
@@ -473,6 +598,7 @@ export function App() {
                 .replace(/i/g, '1')
                 .replace(/l/g, '1')
                 .replace(/\|/g, '1')
+                .replace(/e/g, '2')
                 .replace(/Z/g, '2')
                 .replace(/A/g, '4')
                 .replace(/q/g, '4')
@@ -482,34 +608,45 @@ export function App() {
                 .replace(/o/g, '0')
                 .replace(/O/g, '0');
 
-            if(!text.includes('.')){
+            if (!text.includes('.') && (text.match(/\d/g) || []).length === 5) {
+                const firstPart = text.slice(0, 3);
+                const secondPart = text.slice(3)
+
+                text = firstPart + "." + secondPart;
+            }
+
+            if (!text.includes('.')) {
                 text = text.replace(/(.*) /, "$1.")
             }
 
             text = text.replace(/[^0-9.]/g, "")
 
-            if(!text.includes('.')){
-                const insertIndex = text.length - 2; // 5 - 2 = 3
+            if (!text.includes('.')) {
+                const insertIndex = text.length - 2;
 
-                const firstPart = text.slice(0, insertIndex); // "abc"
-                const secondPart = text.slice(insertIndex); // "de"
+                const firstPart = text.slice(0, insertIndex);
+                const secondPart = text.slice(insertIndex);
 
-                text = firstPart + "." + secondPart; // "abcXYZde"
+                text = firstPart + "." + secondPart;
             }
 
-            if(text.indexOf(".") > 3){
+            if (text.indexOf(".") > 3) {
                 const length = text.indexOf(".")
                 text = text.slice(length - 3)
             }
 
-            if(text.slice(text.indexOf("."), text.length).length  > 3){
+            if (text.slice(text.indexOf("."), text.length).length > 3) {
                 text = text.slice(0, text.indexOf(".") + 3)
             }
 
             return text;
         };
 
-        const newSuggestions: Array<Array<{ title: string, id: number, distance: number }>> = Array.from({length: selections.length}, () => []);
+        const newSuggestions: Array<Array<{
+            title: string,
+            id: number,
+            distance: number
+        }>> = Array.from({length: selections.length}, () => []);
         const newSelectedCorrections: (string | null)[] = Array(selections.length).fill(null);
         const newSelectedCorrectionIds: (number | null)[] = Array(selections.length).fill(null);
 
@@ -525,7 +662,7 @@ export function App() {
                 newSuggestions[index] = suggestions;
                 newSelectedCorrections[index] = suggestions[0]?.title || ''; // Set best match as default
                 newSelectedCorrectionIds[index] = suggestions[0]?.id ?? null;
-            } else if (['NOTES', 'CHORD', 'PEAK', 'CHARGE', 'SOF-LAN', 'SCRATCH'].includes(selectionLabel)) {
+            } else if (['NOTES', 'CHORD', 'PEAK', 'CHARGE', 'SCRATCH', 'SOF-LAN'].includes(selectionLabel)) {
                 newSelectedCorrections[index] = performSimpleCorrection(ocrText);
             }
         });
@@ -558,6 +695,19 @@ export function App() {
                 case 'k':
                     handleSeek(1);
                     break;
+                case 'l': {
+                    const newIsSeeking = !isSeeking;
+                    setIsSeeking(newIsSeeking);
+                    isSeekingRef.current = newIsSeeking;
+                    if (newIsSeeking) {
+                        findNextChange();
+                    }
+                    break;
+                }
+                case 'enter':
+                    event.preventDefault();
+                    handleAddToOutput();
+                    break;
                 case ' ':
                     event.preventDefault();
                     runOCR();
@@ -571,7 +721,7 @@ export function App() {
         return () => {
             document.removeEventListener('keydown', handleKeyDown);
         };
-    }, [videoSrc, frameRate, handleSeek, runOCR]);
+    }, [videoSrc, frameRate, handleSeek, runOCR, isSeeking, findNextChange, handleAddToOutput]);
 
     // Effect to handle OpenCV.js initialization
     useEffect(() => {
@@ -639,70 +789,6 @@ export function App() {
 
     }, [selections, capturedImage, isCvReady]); // Removed perspectivePoints from dependencies
 
-    const compareImageData = (d1: Uint8ClampedArray, d2: Uint8ClampedArray) => {
-        let diff = 0;
-        for (let i = 0; i < d1.length; i += 4) {
-            const gray1 = (d1[i] + d1[i + 1] + d1[i + 2]) / 3;
-            const gray2 = (d2[i] + d2[i + 1] + d2[i + 2]) / 3;
-            diff += Math.abs(gray1 - gray2);
-        }
-        return diff / (d1.length / 4);
-    };
-
-    const findNextChange = useCallback(async () => {
-        if (!videoRef.current || !canvasRef.current) return;
-
-        const video = videoRef.current;
-        const mainCtx = canvasRef.current.getContext('2d', {willReadFrequently: true});
-        if (!mainCtx) return;
-
-        const referenceIndex = 0;
-
-        const rect = selections[referenceIndex];
-        referenceImageData.current = mainCtx.getImageData(rect.x, rect.y, rect.width, rect.height);
-
-        setIsSeeking(true);
-
-        let seeking = true;
-        const stopSeeking = () => {
-            seeking = false;
-        };
-        document.addEventListener('stop-seeking', stopSeeking, {once: true});
-
-        while (seeking && !video.ended) {
-            video.currentTime += (1 / frameRate);
-            await new Promise(resolve => {
-                const onSeeked = () => {
-                    video.removeEventListener('seeked', onSeeked);
-                    resolve(null);
-                };
-                video.addEventListener('seeked', onSeeked);
-            });
-
-            const newImageData = mainCtx.getImageData(rect.x, rect.y, rect.width, rect.height);
-            const diff = compareImageData(referenceImageData.current.data, newImageData.data);
-
-            if (diff > diffThreshold) {
-                break;
-            }
-        }
-
-        document.removeEventListener('stop-seeking', stopSeeking);
-        captureFrame();
-        setIsSeeking(false);
-
-    }, [selections, frameRate, diffThreshold, captureFrame]);
-
-    useEffect(() => {
-        if (isSeeking) {
-            const handleStop = () => setIsSeeking(false);
-            // A way to stop the loop externally
-            document.addEventListener('stop-seeking', handleStop);
-            findNextChange();
-            return () => document.removeEventListener('stop-seeking', handleStop);
-        }
-    }, [isSeeking, findNextChange]);
-
 
     // Effect to draw on main canvas
     useEffect(() => {
@@ -762,12 +848,15 @@ export function App() {
                         maxWidth: '700px',
                         width: '100%'
                     }}>
-                        <a href={"https://asia-northeast1-iidx-viewer.cloudfunctions.net/getMasterData"} target={"_blank"}>マスタデータ</a>
+                        <a href={"https://asia-northeast1-iidx-viewer.cloudfunctions.net/getMasterData"}
+                           target={"_blank"}>マスタデータ</a>
                         <textarea rows={5}
                                   placeholder='上記リンクの内容をすべて選択してコピペしてください'
                                   value={masterDataJson} onChange={(e) => setMasterDataJson(e.target.value)}
                                   style={{width: '100%', padding: '5px'}}/>
-                        <button onClick={handleLoadMasterData} style={{alignSelf: 'flex-start'}}>マスタデータを読み込む</button>
+                        <button onClick={handleLoadMasterData}
+                                style={{alignSelf: 'flex-start'}}>マスタデータを読み込む
+                        </button>
                     </div>
                 )}
                 <input type="file" accept="video/*" onChange={handleFileChange}/>
@@ -775,6 +864,22 @@ export function App() {
                     <div>
                         <video ref={videoRef} controls src={videoSrc} onSeeked={captureFrame}
                                style={{width: '100%', maxWidth: '700px', marginTop: '20px'}}/>
+                        <div style={{
+                            marginTop: '10px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '5px',
+                            flexWrap: 'wrap'
+                        }}>
+                            <button onClick={handleSettingPerspective} disabled={!videoSrc || isSettingPerspective}>
+                                台形補正範囲を設定
+                            </button>
+                            <label style={{marginLeft: '10px'}}>
+                                {isSettingPerspective ? `点をクリックしてください (${perspectivePoints.length}/4)` : `${perspectivePoints.length === 4 ? '設定済' : '未設定'}`}
+                                {perspectivePoints.length === 4 && perspectivePoints.map((p) =>
+                                    (`(${p.x.toFixed(0)},${p.y.toFixed(0)})`)).join(", ")}
+                            </label>
+                        </div>
                         <div style={{
                             marginTop: '10px',
                             display: 'flex',
@@ -800,13 +905,35 @@ export function App() {
                             gap: '5px',
                             flexWrap: 'wrap'
                         }}>
-                            <button onClick={handleSettingPerspective} disabled={!videoSrc || isSettingPerspective}>
-                                台形補正範囲を設定
+                            <button onClick={() => {
+                                const newIsSeeking = !isSeeking;
+                                setIsSeeking(newIsSeeking);
+                                isSeekingRef.current = newIsSeeking;
+                                if (newIsSeeking) {
+                                    findNextChange();
+                                }
+                            }} disabled={!capturedImage}>
+                                {isSeeking ? '停止 (L)' : '次の曲を自動検出 (L)'}
                             </button>
-                            <label style={{marginLeft: '10px'}}>
-                                {isSettingPerspective ? `点をクリックしてください (${perspectivePoints.length}/4)` : `${perspectivePoints.length === 4 ? '設定済' : '未設定'}`}
-                                {perspectivePoints.length === 4 && perspectivePoints.map((p) =>
-                                    (`(${p.x.toFixed(0)},${p.y.toFixed(0)})`)).join(", ")}
+                            <label>
+                                変化の閾値:
+                                <input type="number" value={diffThreshold} min={1} max={255}
+                                       onChange={(e) => setDiffThreshold(parseInt(e.target.value, 10) || 20)}
+                                       style={{width: '50px', marginLeft: '5px'}}/>
+                            </label>
+                            <label>
+                                検知後のフレームスキップ数:
+                                <input type="number" value={skipFramesAfterChange} min={0}
+                                       onChange={(e) => setSkipFramesAfterChange(parseInt(e.target.value, 10) || 0)}
+                                       style={{width: '50px', marginLeft: '5px'}}/>
+                            </label>
+                            <label>
+                                自動OCR:
+                                <input
+                                    type="checkbox"
+                                    checked={autoOcrAfterChange}
+                                    onChange={(e) => setAutoOcrAfterChange(e.target.checked)}
+                                    style={{marginLeft: '5px'}}/>
                             </label>
                         </div>
                         <div style={{
@@ -816,7 +943,6 @@ export function App() {
                             gap: '5px',
                             flexWrap: 'wrap'
                         }}>
-                            <button onClick={captureFrame}>Capture Frame</button>
                             {capturedImage && (
                                 <>
                                     <button onClick={runOCR} disabled={isOcrRunning || selections.length === 0}
@@ -824,30 +950,15 @@ export function App() {
                                         {isOcrRunning ? 'Processing...' : 'Run OCR (Space)'}
                                     </button>
                                     <button onClick={handleAddToOutput} style={{marginLeft: '10px'}}>
-                                        出力に追加
+                                        出力に追加 (Enter)
                                     </button>
+                                    {addOutputMessage && <span style={{
+                                        marginLeft: '10px',
+                                        color: addOutputMessageType === 'success' ? 'lightgreen' : 'red'
+                                    }}>{addOutputMessage}</span>}
                                 </>
                             )}
                         </div>
-                        {selections.length > 0 && (
-                            <div style={{
-                                marginTop: '10px',
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: '5px',
-                                flexWrap: 'wrap'
-                            }}>
-                                <button onClick={() => setIsSeeking(!isSeeking)}>
-                                    {isSeeking ? 'Stop Seeking' : 'Find Next Change'}
-                                </button>
-                                <label>
-                                    Diff Threshold:
-                                    <input type="number" value={diffThreshold}
-                                           onChange={(e) => setDiffThreshold(parseInt(e.target.value, 10) || 20)}
-                                           min={1} max={255} style={{width: '50px', marginLeft: '5px'}}/>
-                                </label>
-                            </div>
-                        )}
                         {selections.length > 0 && (
                             <div style={{marginTop: '20px'}}>
                                 <h3>Selections</h3>
@@ -885,7 +996,7 @@ export function App() {
                                                 </td>
                                                 <td style={{textAlign: 'center'}}>
                                                     <button onClick={() => handleRedraw(index)}
-                                                            disabled={(redrawIndex !== null && redrawIndex !== index) || isSeeking || isSettingPerspective}
+                                                            disabled={(redrawIndex !== null && redrawIndex !== index) || isSettingPerspective}
                                                             style={{marginLeft: '5px'}}>
                                                         {redrawIndex === index ? '範囲設定中' : '範囲設定'}
                                                     </button>
@@ -910,7 +1021,11 @@ export function App() {
                                                            min={0.1} step={0.1} style={{width: '50px'}}/>
                                                 </td>
                                                 <td>
-                                                    <div style={{width: "350px", overflowX: "auto", whiteSpace: "nowrap"}}>
+                                                    <div style={{
+                                                        width: "350px",
+                                                        overflowX: "auto",
+                                                        whiteSpace: "nowrap"
+                                                    }}>
                                                         {processedImages[index] &&
                                                             <img src={processedImages[index]}
                                                                  alt={`Processed selection ${index + 1}`}
@@ -921,7 +1036,11 @@ export function App() {
                                                 <td style={{whiteSpace: "nowrap"}}>{ocrResults[index] || ''}</td>
                                                 <td>
                                                     {selections[index].label === 'TITLE' ? (
-                                                        <div style={{display: 'flex', flexDirection: 'column', gap: '5px'}}>
+                                                        <div style={{
+                                                            display: 'flex',
+                                                            flexDirection: 'column',
+                                                            gap: '5px'
+                                                        }}>
                                                             {correctionSuggestions[index]?.length > 0 && (
                                                                 <select
                                                                     value={selectedCorrectionIds[index] ?? ''}
@@ -940,7 +1059,8 @@ export function App() {
                                                                     }}
                                                                 >
                                                                     {correctionSuggestions[index]?.map((suggestion) => (
-                                                                        <option key={suggestion.id} value={suggestion.id}>
+                                                                        <option key={suggestion.id}
+                                                                                value={suggestion.id}>
                                                                             {suggestion.title} (dist: {suggestion.distance})
                                                                         </option>
                                                                     ))}
@@ -965,21 +1085,35 @@ export function App() {
                                                             />
                                                             <datalist id={`manual-suggestions-${index}`}>
                                                                 {manualSuggestions.map((suggestion) => (
-                                                                    <option key={suggestion.id} value={suggestion.title}/>
+                                                                    <option key={suggestion.id}
+                                                                            value={suggestion.title}/>
                                                                 ))}
                                                             </datalist>
+                                                            {correctionInputErrors[index] && <span style={{
+                                                                color: 'red',
+                                                                fontSize: '0.9em'
+                                                            }}>{correctionInputErrors[index]}</span>}
                                                         </div>
                                                     ) : (
-                                                        <input
-                                                            type="text"
-                                                            value={selectedCorrections[index] || ''}
-                                                            onChange={(e) => {
-                                                                const newSelected = [...selectedCorrections];
-                                                                newSelected[index] = e.target.value;
-                                                                setSelectedCorrections(newSelected);
-                                                            }}
-                                                            style={{maxWidth: '300px', width: '100%'}}
-                                                        />
+                                                        <div style={{
+                                                            display: 'flex',
+                                                            flexDirection: 'column',
+                                                            gap: '5px'
+                                                        }}>
+                                                            <input
+                                                                type="text"
+                                                                value={selectedCorrections[index] || ''}
+                                                                onChange={(e) => {
+                                                                    const newSelected = [...selectedCorrections];
+                                                                    newSelected[index] = e.target.value;
+                                                                    setSelectedCorrections(newSelected);
+                                                                }}
+                                                                style={{maxWidth: '300px', width: '100%'}}/>
+                                                            {correctionInputErrors[index] && <span style={{
+                                                                color: 'red',
+                                                                fontSize: '0.9em'
+                                                            }}>{correctionInputErrors[index]}</span>}
+                                                        </div>
                                                     )
                                                     }
                                                 </td>
