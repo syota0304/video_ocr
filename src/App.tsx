@@ -40,7 +40,7 @@ interface SelectionRect {
     threshold: number;
     scaleX: number;
     scaleY: number;
-    negative: boolean
+    negative: boolean;
 }
 
 const defaultSelection: SelectionRect = {
@@ -58,62 +58,62 @@ const defaultSelection: SelectionRect = {
 const defaultSelections: SelectionRect[] = [
     {
         label: 'TITLE',
-        x: 43,
-        y: 563,
-        width: 867,
+        x: 45,
+        y: 580,
+        width: 859,
         height: 42,
         scaleX: 1,
         scaleY: 1,
     },
     {
         label: 'NOTES',
-        x: 196,
-        y: 505,
-        width: 107,
-        height: 20,
+        x: 213,
+        y: 519,
+        width: 113,
+        height: 25,
     },
     {
         label: 'CHORD',
-        x: 508,
-        y: 505,
+        x: 558,
+        y: 520,
         width: 108,
-        height: 20,
+        height: 24,
     },
     {
         label: 'PEAK',
-        x: 828,
-        y: 503,
-        width: 104,
-        height: 23,
+        x: 902,
+        y: 521,
+        width: 109,
+        height: 24,
     },
     {
         label: 'CHARGE',
-        x: 196,
-        y: 527,
-        width: 106,
-        height: 21,
+        x: 212,
+        y: 543,
+        width: 114,
+        height: 24,
     },
     {
         label: 'SCRATCH',
-        x: 509,
-        y: 526,
-        width: 104,
-        height: 22,
+        x: 558,
+        y: 545,
+        width: 109,
+        height: 21,
     },
     {
         label: 'SOF-LAN',
-        x: 828,
-        y: 527,
-        width: 107,
-        height: 23,
+        x: 901,
+        y: 545,
+        width: 110,
+        height: 22,
     },
 ].map(e => ({...defaultSelection, ...e,}))
 
 const defaultPerspectivePoints = [
-    {x: 488, y: 139},
-    {x: 1335, y: 157},
-    {x: 1462, y: 916},
-    {x: 446, y: 1013},
+    {x: 644, y: 66},
+    {x: 1580, y: 33},
+    {x: 1708, y: 1000},
+    {x: 600, y: 1006},
 ]
 
 type outputData = {
@@ -174,6 +174,7 @@ export function App() {
     const [titleMasterData, setTitleMasterData] = useState<MasterData[]>([]);
     const [showMasterDataInput, setShowMasterDataInput] = useState(true);
     const [masterDataJson, setMasterDataJson] = useState('');
+    const [settingsJson, setSettingsJson] = useState('');
 
 
     const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -375,6 +376,46 @@ export function App() {
             return selection;
         });
         setSelections(updatedSelections);
+    };
+
+    const handleExportSettings = () => {
+        const settings = {
+            perspectivePoints,
+            detectionSettings: {
+                diffThreshold,
+                skipFramesAfterChange,
+            },
+            selections: selections.map(({ label, x, y, width, height, threshold, scaleX, scaleY, negative }) => ({
+                label, x, y, width, height, threshold, scaleX, scaleY, negative
+            })),
+        };
+        setSettingsJson(JSON.stringify(settings, null, 2));
+        alert('現在の設定をエクスポートしました。');
+    };
+
+    const handleImportSettings = () => {
+        if (!settingsJson.trim()) {
+            alert('設定JSONを貼り付けてください。');
+            return;
+        }
+        try {
+            const settings = JSON.parse(settingsJson);
+
+            if (settings.perspectivePoints && settings.detectionSettings && settings.selections) {
+                setPerspectivePoints(settings.perspectivePoints);
+                setDiffThreshold(settings.detectionSettings.diffThreshold);
+                setSkipFramesAfterChange(settings.detectionSettings.skipFramesAfterChange);
+                setSelections(settings.selections);
+
+                alert('設定をインポートしました。');
+                captureFrame(); // Apply new perspective settings
+            } else {
+                alert('不正なJSONフォーマットです。必要なキーが不足しています。');
+            }
+        } catch (error) {
+            console.error('Failed to parse settings JSON:', error);
+            alert('JSONの解析に失敗しました。フォーマットを確認してください。');
+        }
     };
 
     const handleAddToOutput = useCallback(() => {
@@ -859,6 +900,29 @@ export function App() {
                         </button>
                     </div>
                 )}
+                <div style={{
+                    margin: '20px 0',
+                    borderTop: '1px solid #444',
+                    paddingTop: '20px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '10px',
+                    maxWidth: '700px',
+                    width: '100%'
+                }}>
+                    <h4>設定のエクスポート/インポート</h4>
+                    <textarea
+                        rows={8}
+                        placeholder='ここに設定JSONを貼り付けてインポート、またはエクスポートされた設定が表示されます。'
+                        value={settingsJson}
+                        onChange={(e) => setSettingsJson(e.target.value)}
+                        style={{width: '100%', padding: '5px', fontFamily: 'monospace'}}
+                    />
+                    <div style={{display: 'flex', gap: '10px'}}>
+                        <button onClick={handleExportSettings}>設定をエクスポート</button>
+                        <button onClick={handleImportSettings}>設定をインポート</button>
+                    </div>
+                </div>
                 <input type="file" accept="video/*" onChange={handleFileChange}/>
                 {videoSrc && (
                     <div>
