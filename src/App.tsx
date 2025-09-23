@@ -66,6 +66,15 @@ const defaultSelections: SelectionRect[] = [
         scaleY: 1,
     },
     {
+        label: 'ARTIST',
+        x: 45,
+        y: 580,
+        width: 859,
+        height: 42,
+        scaleX: 1,
+        scaleY: 1,
+    },
+    {
         label: 'NOTES',
         x: 213,
         y: 519,
@@ -143,7 +152,9 @@ export function App() {
     const [correctionSuggestions, setCorrectionSuggestions] = useState<Array<Array<{
         title: string,
         id: number,
-        distance: number
+        distance: number,
+        titleDistance: number,
+        artistDistance: number,
     }>>>([]);
     const [isOcrRunning, setIsOcrRunning] = useState(false);
     const [processedImages, setProcessedImages] = useState<string[]>([]);
@@ -169,6 +180,7 @@ export function App() {
     // State for master data
     type MasterData = {
         title: string,
+        artist: string,
         id: number,
     }
     const [titleMasterData, setTitleMasterData] = useState<MasterData[]>([]);
@@ -492,20 +504,11 @@ export function App() {
         }
     }, [selections, selectedCorrections, selectedCorrectionIds, outputData]);
 
-    const compareImageData = (d1: Uint8ClampedArray, d2: Uint8ClampedArray) => {
-        let diff = 0;
-        for (let i = 0; i < d1.length; i += 4) {
-            const gray1 = (d1[i] + d1[i + 1] + d1[i + 2]) / 3;
-            const gray2 = (d2[i] + d2[i + 1] + d2[i + 2]) / 3;
-            diff += Math.abs(gray1 - gray2);
-        }
-        return diff / (d1.length / 4);
-    };
-
     const findNextChange = useCallback(async () => {
         const video = videoRef.current;
-        const mainCtx = canvasRef.current?.getContext('2d', {willReadFrequently: true});
-        if (!video || !mainCtx || selections.length === 0) return;
+        const canvas = canvasRef.current;
+        const cv = cvRef.current;
+        if (!video || !canvas || !cv || selections.length === 0) return;
 
         const seekFrame = async () => {
             video.currentTime += (1 / frameRate);
@@ -518,9 +521,10 @@ export function App() {
             });
         };
 
-        const referenceImageDatas = selections.map(rect => {
-            return mainCtx.getImageData(rect.x, rect.y, rect.width, rect.height);
-        });
+        // Get the whole canvas as a reference Mat
+        const referenceMat = cv.imread(canvas);
+        const referenceGray = new cv.Mat();
+        cv.cvtColor(referenceMat, referenceGray, cv.COLOR_RGBA2GRAY);
 
         let changeDetected = false;
         while (isSeekingRef.current && !video.ended) {
@@ -528,17 +532,35 @@ export function App() {
 
             if (!isSeekingRef.current) break;
 
-            const hasChanged = selections.some((rect, index) => {
-                const newImageData = mainCtx.getImageData(rect.x, rect.y, rect.width, rect.height);
-                const diff = compareImageData(referenceImageDatas[index].data, newImageData.data);
-                return diff > diffThreshold;
+            const currentMat = cv.imread(canvas);
+            const currentGray = new cv.Mat();
+            cv.cvtColor(currentMat, currentGray, cv.COLOR_RGBA2GRAY);
+
+            const diff = new cv.Mat();
+            cv.absdiff(referenceGray, currentGray, diff);
+
+            const thresholdMat = new cv.Mat();
+            cv.threshold(diff, thresholdMat, diffThreshold, 255, cv.THRESH_BINARY);
+
+            changeDetected = selections.some(rect => {
+                const roi = thresholdMat.roi(new cv.Rect(rect.x, rect.y, rect.width, rect.height));
+                const nonZero = cv.countNonZero(roi);
+                roi.delete();
+                return nonZero > 10; // A small tolerance instead of > 0
             });
 
-            if (hasChanged) {
-                changeDetected = true;
+            currentMat.delete();
+            currentGray.delete();
+            diff.delete();
+            thresholdMat.delete();
+
+            if (changeDetected) {
                 break;
             }
         }
+
+        referenceMat.delete();
+        referenceGray.delete();
 
         if (isSeekingRef.current && changeDetected) {
             // Skip frames to let the transition finish
@@ -639,6 +661,8 @@ export function App() {
                 .replace(/i/g, '1')
                 .replace(/l/g, '1')
                 .replace(/\|/g, '1')
+                .replace(/!/g, '1')
+                .replace(/]/g, '1')
                 .replace(/e/g, '2')
                 .replace(/Z/g, '2')
                 .replace(/A/g, '4')
@@ -691,14 +715,27 @@ export function App() {
         const newSelectedCorrections: (string | null)[] = Array(selections.length).fill(null);
         const newSelectedCorrectionIds: (number | null)[] = Array(selections.length).fill(null);
 
+        // Find artist OCR result once
+        const artistIndex = selections.findIndex(s => s.label === 'ARTIST');
+        const artistOcrText = artistIndex !== -1 ? ocrResults[artistIndex]?.trim() : '';
+
         ocrResults.forEach((ocrText, index) => {
             const selectionLabel = selections[index]?.label;
-            if (selectionLabel === 'TITLE' && ocrText.trim() && titleMasterData.length > 0) {
-                const suggestions = titleMasterData.map(masterItem => ({
-                    title: masterItem.title,
-                    id: masterItem.id,
-                    distance: getLevenshteinDistance(ocrText.trim(), masterItem.title)
-                })).sort((a, b) => a.distance - b.distance).slice(0, 10);
+            if (selectionLabel === 'TITLE' && titleMasterData.length > 0) {
+                const titleOcrText = ocrText.trim();
+
+                const suggestions = titleMasterData.map(masterItem => {
+                    const titleDistance = titleOcrText.length > 0 ? getLevenshteinDistance(titleOcrText, masterItem.title) : 0;
+                    const artistDistance = artistOcrText?.length > 0 ? getLevenshteinDistance(artistOcrText, masterItem.artist) : 0;
+                    const totalDistance = titleDistance + artistDistance;
+                    return {
+                        title: masterItem.title,
+                        id: masterItem.id,
+                        distance: totalDistance,
+                        titleDistance: titleDistance,
+                        artistDistance: artistDistance,
+                    };
+                }).sort((a, b) => a.distance - b.distance).slice(0, 20);
 
                 newSuggestions[index] = suggestions;
                 newSelectedCorrections[index] = suggestions[0]?.title || ''; // Set best match as default
@@ -1125,7 +1162,7 @@ export function App() {
                                                                     {correctionSuggestions[index]?.map((suggestion) => (
                                                                         <option key={suggestion.id}
                                                                                 value={suggestion.id}>
-                                                                            {suggestion.title} (dist: {suggestion.distance})
+                                                                            {suggestion.title} (dist: {suggestion.distance}, {suggestion.titleDistance}+{suggestion.artistDistance})
                                                                         </option>
                                                                     ))}
                                                                 </select>
@@ -1158,7 +1195,9 @@ export function App() {
                                                                 fontSize: '0.9em'
                                                             }}>{correctionInputErrors[index]}</span>}
                                                         </div>
-                                                    ) : (
+                                                    ) :selections[index].label === 'ARTIST'?(<>
+                                                        {titleMasterData.find(e=>e.id === (selectedCorrectionIds[0]))?.artist}
+                                                    </>): (
                                                         <div style={{
                                                             display: 'flex',
                                                             flexDirection: 'column',
@@ -1172,7 +1211,7 @@ export function App() {
                                                                     newSelected[index] = e.target.value;
                                                                     setSelectedCorrections(newSelected);
                                                                 }}
-                                                                style={{maxWidth: '300px', width: '100%'}}/>
+                                                                style={{maxWidth: '300px', fontSize : "60px"}}/>
                                                             {correctionInputErrors[index] && <span style={{
                                                                 color: 'red',
                                                                 fontSize: '0.9em'
