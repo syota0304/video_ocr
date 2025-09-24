@@ -41,6 +41,10 @@ interface SelectionRect {
     scaleX: number;
     scaleY: number;
     negative: boolean;
+    x2?: number;
+    y2?: number;
+    width2?: number;
+    height2?: number;
 }
 
 const defaultSelection: SelectionRect = {
@@ -78,43 +82,67 @@ const defaultSelections: SelectionRect[] = [
         label: 'NOTES',
         x: 213,
         y: 519,
-        width: 113,
+        width: 70,
         height: 25,
+        x2: 285,
+        y2: 519,
+        width2: 45,
+        height2: 25,
     },
     {
         label: 'CHORD',
         x: 558,
         y: 520,
-        width: 108,
+        width: 65,
         height: 24,
+        x2: 625,
+        y2: 520,
+        width2: 45,
+        height2: 24,
     },
     {
         label: 'PEAK',
         x: 902,
         y: 521,
-        width: 109,
+        width: 65,
         height: 24,
+        x2: 970,
+        y2: 521,
+        width2: 45,
+        height2: 24,
     },
     {
         label: 'CHARGE',
         x: 212,
         y: 543,
-        width: 114,
+        width: 70,
         height: 24,
+        x2: 285,
+        y2: 543,
+        width2: 45,
+        height2: 24,
     },
     {
         label: 'SCRATCH',
         x: 558,
         y: 545,
-        width: 109,
+        width: 65,
         height: 21,
+        x2: 625,
+        y2: 545,
+        width2: 45,
+        height2: 21,
     },
     {
         label: 'SOF-LAN',
         x: 901,
         y: 545,
-        width: 110,
+        width: 65,
         height: 22,
+        x2: 970,
+        y2: 545,
+        width2: 45,
+        height2: 22,
     },
 ].map(e => ({...defaultSelection, ...e,}))
 
@@ -157,10 +185,10 @@ export function App() {
         artistDistance: number,
     }>>>([]);
     const [isOcrRunning, setIsOcrRunning] = useState(false);
-    const [processedImages, setProcessedImages] = useState<string[]>([]);
-    const [redrawIndex, setRedrawIndex] = useState<number | null>(null);
+    const [processedImages, setProcessedImages] = useState<{ integer: string, decimal?: string }[]>([]);
+    const [redrawTarget, setRedrawTarget] = useState<{ index: number, part: 'integer' | 'decimal' } | null>(null);
     const [isSeeking, setIsSeeking] = useState(false);
-    const [skipFramesAfterChange, setSkipFramesAfterChange] = useState(2);
+    const [skipFramesAfterChange, setSkipFramesAfterChange] = useState(10);
     const [autoOcrAfterChange, setAutoOcrAfterChange] = useState(true);
     const [shouldRunOcr, setShouldRunOcr] = useState(false);
     const [diffThreshold, setDiffThreshold] = useState(20);
@@ -202,7 +230,7 @@ export function App() {
             setCorrectionInputErrors([]);
             setCorrectionSuggestions([]);
             setProcessedImages([]);
-            setRedrawIndex(null);
+            setRedrawTarget(null);
             setIsSeeking(false);
             isSeekingRef.current = false;
             setShouldRunOcr(false);
@@ -299,7 +327,7 @@ export function App() {
             });
             return;
         }
-        if (redrawIndex === null) return;
+        if (redrawTarget === null) return;
         event.preventDefault();
         setIsDrawing(true);
         const pos = getCanvasCoordinates(event);
@@ -326,13 +354,20 @@ export function App() {
         };
 
         if (newCoords.width > 2 && newCoords.height > 2) {
-            if (redrawIndex !== null) {
-                setSelections(prev => prev.map((selection, index) =>
-                    index === redrawIndex
-                        ? {...selection, ...newCoords}
-                        : selection
-                ));
-                setRedrawIndex(null);
+            if (redrawTarget !== null) {
+                const {index, part} = redrawTarget;
+                setSelections(prev => prev.map((selection, i) => {
+                    if (i === index) {
+                        if (part === 'integer') {
+                            return {...selection, ...newCoords};
+                        } else {
+                            return {...selection, x2: newCoords.x, y2: newCoords.y, width2: newCoords.width, height2: newCoords.height};
+                        }
+                    }
+                    return selection;
+                }));
+
+                setRedrawTarget(null);
             }
         }
 
@@ -341,8 +376,8 @@ export function App() {
         setEndPoint(null);
     };
 
-    const handleRedraw = (index: number) => {
-        setRedrawIndex(index);
+    const handleRedraw = (index: number, part: 'integer' | 'decimal') => {
+        setRedrawTarget({index, part});
     };
 
     const handleSettingPerspective = () => {
@@ -613,20 +648,41 @@ export function App() {
         const scheduler = Tesseract.createScheduler();
 
         try {
-            const worker = await Tesseract.createWorker('eng');
+            const worker = await Tesseract.createWorker('eng', 1, {
+                // logger: m => console.log(m),
+            });
             scheduler.addWorker(worker);
 
-            const jobPromises = selections.map((_selection, index) => {
-                const imageUrl = processedImages[index];
-                return scheduler.addJob('recognize', imageUrl).then((result: any) => ({result, index}));
+            const jobPromises: Promise<{ result: any, index: number, part: 'integer' | 'decimal' }>[] = [];
+            processedImages.forEach((imageData, index) => {
+                if (imageData.integer) {
+                    jobPromises.push(
+                        scheduler.addJob('recognize', imageData.integer).then(result => ({result, index, part: 'integer'}))
+                    );
+                }
+                if (imageData.decimal) {
+                    jobPromises.push(
+                        scheduler.addJob('recognize', imageData.decimal).then(result => ({result, index, part: 'decimal'}))
+                    );
+                }
             });
 
             const jobResults = await Promise.all(jobPromises);
 
             const finalResults = Array(selections.length).fill('');
-            jobResults.forEach((jobResult: any) => {
-                finalResults[jobResult.index] = jobResult.result.data.text;
+            const tempResults: { [key: number]: { integer?: string, decimal?: string } } = {};
+
+            jobResults.forEach(job => {
+                if (!tempResults[job.index]) tempResults[job.index] = {};
+                tempResults[job.index][job.part] = job.result.data.text.trim();
             });
+
+            for (let i = 0; i < selections.length; i++) {
+                const res = tempResults[i];
+                if (res) {
+                    finalResults[i] = (res.decimal !== undefined) ? `${res.integer || ''}.${res.decimal || ''}` : (res.integer || '');
+                }
+            }
 
             setOcrResults(finalResults);
 
@@ -665,35 +721,23 @@ export function App() {
                 .replace(/]/g, '1')
                 .replace(/e/g, '2')
                 .replace(/Z/g, '2')
+                .replace(/c/g, '2')
+                .replace(/¢/g, '2')
                 .replace(/A/g, '4')
                 .replace(/q/g, '4')
+                .replace(/a/g, '5')
                 .replace(/S/g, '5')
+                .replace(/s/g, '5')
+                .replace(/H/g, '5')
                 .replace(/b/g, '6')
                 .replace(/G/g, '6')
+                .replace(/B/g, '8')
+                .replace(/O/g, '0')
                 .replace(/o/g, '0')
-                .replace(/O/g, '0');
+                .replace(/D/g, '0');
 
-            if (!text.includes('.') && (text.match(/\d/g) || []).length === 5) {
-                const firstPart = text.slice(0, 3);
-                const secondPart = text.slice(3)
-
-                text = firstPart + "." + secondPart;
-            }
-
-            if (!text.includes('.')) {
-                text = text.replace(/(.*) /, "$1.")
-            }
 
             text = text.replace(/[^0-9.]/g, "")
-
-            if (!text.includes('.')) {
-                const insertIndex = text.length - 2;
-
-                const firstPart = text.slice(0, insertIndex);
-                const secondPart = text.slice(insertIndex);
-
-                text = firstPart + "." + secondPart;
-            }
 
             if (text.indexOf(".") > 3) {
                 const length = text.indexOf(".")
@@ -826,44 +870,51 @@ export function App() {
         const cv = cvRef.current;
         if (!cv) return;
 
-        const mainContext = canvasRef.current.getContext('2d');
-        if (!mainContext) return;
+        // Create a single Mat from the clean capturedImage
+        const fullSrcMat = cv.matFromImageData(capturedImage);
 
         const urls = selections.map(rect => {
-            if (rect.width <= 0 || rect.height <= 0 || rect.scaleX <= 0 || rect.scaleY <= 0) {
-                return '';
+            const processPart = (x: number, y: number, width: number, height: number): string => {
+                if (!fullSrcMat || fullSrcMat.empty()) return '';
+                if (width <= 0 || height <= 0 || rect.scaleX <= 0 || rect.scaleY <= 0) {
+                    return '';
+                }
+                let src = null;
+                let dst = null;
+                try {
+                    // Use roi to get the sub-image from the full clean Mat
+                    src = fullSrcMat.roi(new cv.Rect(x, y, width, height));
+                    dst = new cv.Mat();
+
+                    const dsize = new cv.Size(Math.round(width * rect.scaleX), Math.round(height * rect.scaleY));
+                    cv.resize(src, dst, dsize, 0, 0, cv.INTER_LANCZOS4);
+                    cv.cvtColor(dst, dst, cv.COLOR_RGBA2GRAY, 0);
+                    const thresholdType = rect.negative ? cv.THRESH_BINARY_INV : cv.THRESH_BINARY;
+                    cv.threshold(dst, dst, rect.threshold, 255, thresholdType);
+
+                    const tempCanvas = document.createElement('canvas');
+                    cv.imshow(tempCanvas, dst);
+                    return tempCanvas.toDataURL();
+                } finally {
+                    src?.delete();
+                    dst?.delete();
+                }
+            };
+
+            const result: { integer: string, decimal?: string } = {
+                integer: processPart(rect.x, rect.y, rect.width, rect.height)
+            };
+
+            const isSplit = ['NOTES', 'CHORD', 'PEAK', 'CHARGE', 'SCRATCH', 'SOF-LAN'].includes(rect.label);
+            if (isSplit && rect.x2 !== undefined && rect.y2 !== undefined && rect.width2 !== undefined && rect.height2 !== undefined) {
+                result.decimal = processPart(rect.x2, rect.y2, rect.width2, rect.height2);
             }
 
-            let src = null;
-            let dst = null;
-            try {
-                // 選択範囲のImageDataを取得
-                const originalImageData = mainContext.getImageData(rect.x, rect.y, rect.width, rect.height);
-                src = cv.matFromImageData(originalImageData);
-                dst = new cv.Mat();
-
-                // 画像をリサイズ
-                const dsize = new cv.Size(Math.round(rect.width * rect.scaleX), Math.round(rect.height * rect.scaleY));
-                cv.resize(src, dst, dsize, 0, 0, cv.INTER_LANCZOS4);
-
-                // グレースケールに変換
-                cv.cvtColor(dst, dst, cv.COLOR_RGBA2GRAY, 0);
-
-                // 2値化（ネガポジ反転も考慮）
-                const thresholdType = rect.negative ? cv.THRESH_BINARY_INV : cv.THRESH_BINARY;
-                cv.threshold(dst, dst, rect.threshold, 255, thresholdType);
-
-                // 結果をCanvasに描画してDataURLを取得
-                const tempCanvas = document.createElement('canvas');
-                cv.imshow(tempCanvas, dst);
-                return tempCanvas.toDataURL();
-            } finally {
-                // メモリリークを防ぐためにMatオブジェクトを解放
-                src?.delete();
-                dst?.delete();
-            }
+            return result;
         });
         setProcessedImages(urls);
+        // Clean up the full Mat
+        fullSrcMat.delete();
 
     }, [selections, capturedImage, isCvReady]); // Removed perspectivePoints from dependencies
 
@@ -878,10 +929,20 @@ export function App() {
         context.putImageData(capturedImage, 0, 0);
         context.lineWidth = 2;
 
+        const isSplitLabel = (label: string) => ['NOTES', 'CHORD', 'PEAK', 'CHARGE', 'SCRATCH', 'SOF-LAN'].includes(label);
+
         selections.forEach((rect, index) => {
-            if (index === redrawIndex) context.strokeStyle = 'orange';
+            // Draw integer part
+            if (redrawTarget?.index === index && redrawTarget.part === 'integer') context.strokeStyle = 'orange';
             else context.strokeStyle = 'blue';
             context.strokeRect(rect.x, rect.y, rect.width, rect.height);
+
+            // Draw decimal part
+            if (isSplitLabel(rect.label) && rect.x2 !== undefined && rect.y2 !== undefined && rect.width2 !== undefined && rect.height2 !== undefined) {
+                if (redrawTarget?.index === index && redrawTarget.part === 'decimal') context.strokeStyle = 'orange';
+                else context.strokeStyle = 'cyan';
+                context.strokeRect(rect.x2, rect.y2, rect.width2, rect.height2);
+            }
         });
 
         // Draw perspective points and lines ONLY when setting them
@@ -911,7 +972,7 @@ export function App() {
             context.strokeStyle = 'red';
             context.strokeRect(startPoint.x, startPoint.y, endPoint.x - startPoint.x, endPoint.y - startPoint.y);
         }
-    }, [capturedImage, selections, isDrawing, startPoint, endPoint, redrawIndex, isSettingPerspective, perspectivePoints]);
+    }, [capturedImage, selections, isDrawing, startPoint, endPoint, redrawTarget, isSettingPerspective, perspectivePoints]);
 
     return (
         <div className="App">
@@ -1095,13 +1156,27 @@ export function App() {
                                                 <td>
                                                     {rect.label}
                                                 </td>
-                                                <td style={{textAlign: 'center'}}>
-                                                    <button onClick={() => handleRedraw(index)}
-                                                            disabled={(redrawIndex !== null && redrawIndex !== index) || isSettingPerspective}
-                                                            style={{marginLeft: '5px'}}>
-                                                        {redrawIndex === index ? '範囲設定中' : '範囲設定'}
-                                                    </button>
-                                                </td>
+                                                {(() => {
+                                                    const isSplit = ['NOTES', 'CHORD', 'PEAK', 'CHARGE', 'SCRATCH', 'SOF-LAN'].includes(rect.label);
+                                                    return (
+                                                        <td style={{textAlign: 'center', whiteSpace: 'nowrap'}}>
+                                                            <button onClick={() => handleRedraw(index, 'integer')}
+                                                                    disabled={redrawTarget !== null || isSettingPerspective}
+                                                                    style={{display: "block"}}
+                                                            >
+                                                                {redrawTarget?.index === index && redrawTarget?.part === 'integer' ? '設定中' : (isSplit ? '整数部' : '範囲設定')}
+                                                            </button>
+                                                            {isSplit && (
+                                                                <button onClick={() => handleRedraw(index, 'decimal')}
+                                                                        disabled={redrawTarget !== null || isSettingPerspective}
+                                                                        style={{display: "block"}}
+                                                                >
+                                                                    {redrawTarget?.index === index && redrawTarget?.part === 'decimal' ? '設定中' : '小数部'}
+                                                                </button>
+                                                            )}
+                                                        </td>
+                                                    );
+                                                })()}
                                                 <td>{rect.x.toFixed(0)}</td>
                                                 <td>{rect.y.toFixed(0)}</td>
                                                 <td>{rect.width.toFixed(0)}</td>
@@ -1127,9 +1202,14 @@ export function App() {
                                                         overflowX: "auto",
                                                         whiteSpace: "nowrap"
                                                     }}>
-                                                        {processedImages[index] &&
-                                                            <img src={processedImages[index]}
-                                                                 alt={`Processed selection ${index + 1}`}
+                                                        {processedImages[index]?.integer &&
+                                                            <img src={processedImages[index].integer}
+                                                                 alt={`Processed integer part ${index + 1}`}
+                                                            />
+                                                        }
+                                                        {processedImages[index]?.decimal &&
+                                                            <img src={processedImages[index].decimal}
+                                                                 alt={`Processed decimal part ${index + 1}`} style={{marginLeft: '5px'}}
                                                             />
                                                         }
                                                     </div>
@@ -1230,9 +1310,9 @@ export function App() {
                         <canvas
                             ref={canvasRef}
                             style={{
-                                marginTop: '20px',
+                                marginTop: '20px',                                 maxWidth: '100%',
                                 border: '1px solid black',
-                                cursor: (redrawIndex !== null || isSettingPerspective) ? 'crosshair' : 'default'
+                                cursor: (redrawTarget !== null || isSettingPerspective) ? 'crosshair' : 'default'
                             }}
                             onMouseDown={handleMouseDown}
                             onMouseMove={handleMouseMove}
