@@ -31,6 +31,15 @@ const getLevenshteinDistance = (a: string, b: string): number => {
     return matrix[b.length][a.length];
 };
 
+const getMostFrequent = (arr: string[]): string => {
+    if (!arr || arr.length === 0) return '';
+    const counts = arr.reduce((acc, value) => {
+        acc[value] = (acc[value] || 0) + 1;
+        return acc;
+    }, {} as { [key: string]: number });
+    return Object.keys(counts).reduce((a, b) => counts[a] > counts[b] ? a : b);
+};
+
 interface SelectionRect {
     label: string;
     x: number;
@@ -192,6 +201,8 @@ export function App() {
     const [autoOcrAfterChange, setAutoOcrAfterChange] = useState(true);
     const [shouldRunOcr, setShouldRunOcr] = useState(false);
     const [diffThreshold, setDiffThreshold] = useState(20);
+    const [thresholdStep, setThresholdStep] = useState(3);
+    const [ocrImageCount, setOcrImageCount] = useState(5);
     const isSeekingRef = useRef(false);
 
     const cvRef = useRef<any>(null);
@@ -432,8 +443,9 @@ export function App() {
                 diffThreshold,
                 skipFramesAfterChange,
             },
-            selections: selections.map(({ label, x, y, width, height, threshold, scaleX, scaleY, negative }) => ({
-                label, x, y, width, height, threshold, scaleX, scaleY, negative
+            // Export all relevant properties, including optional ones
+            selections: selections.map(({ label, x, y, width, height, threshold, scaleX, scaleY, negative, x2, y2, width2, height2 }) => ({
+                label, x, y, width, height, threshold, scaleX, scaleY, negative, x2, y2, width2, height2
             })),
         };
         setSettingsJson(JSON.stringify(settings, null, 2));
@@ -452,7 +464,13 @@ export function App() {
                 setPerspectivePoints(settings.perspectivePoints);
                 setDiffThreshold(settings.detectionSettings.diffThreshold);
                 setSkipFramesAfterChange(settings.detectionSettings.skipFramesAfterChange);
-                setSelections(settings.selections);
+
+                // Ensure imported selections have all default properties to prevent errors
+                const importedSelections = settings.selections.map((importedRect: Partial<SelectionRect>) => ({
+                    ...defaultSelection, // Start with defaults
+                    ...importedRect,     // Override with imported values
+                }));
+                setSelections(importedSelections);
 
                 alert('設定をインポートしました。');
                 captureFrame(); // Apply new perspective settings
@@ -641,11 +659,19 @@ export function App() {
     }, []);
 
     const runOCR = useCallback(async () => {
-        if (processedImages.length === 0 || selections.length !== processedImages.length || isOcrRunning) return;
+        if (!capturedImage || selections.length === 0 || isOcrRunning) return;
+
         setIsOcrRunning(true);
         setOcrResults(Array(selections.length).fill('Processing...'));
 
         const scheduler = Tesseract.createScheduler();
+        const cv = cvRef.current;
+        if (!cv) {
+            setIsOcrRunning(false);
+            return;
+        }
+
+        const fullSrcMat = cv.matFromImageData(capturedImage);
 
         try {
             const worker = await Tesseract.createWorker('eng', 1, {
@@ -653,34 +679,72 @@ export function App() {
             });
             scheduler.addWorker(worker);
 
-            const jobPromises: Promise<{ result: any, index: number, part: 'integer' | 'decimal' }>[] = [];
-            processedImages.forEach((imageData, index) => {
-                if (imageData.integer) {
-                    jobPromises.push(
-                        scheduler.addJob('recognize', imageData.integer).then(result => ({result, index, part: 'integer'}))
-                    );
+            const generateUrlsWithVariations = (rect: SelectionRect, x: number, y: number, width: number, height: number): string[] => {
+                if (!fullSrcMat || fullSrcMat.empty() || width <= 0 || height <= 0 || x + width > fullSrcMat.cols || y + height > fullSrcMat.rows) {
+                    return [];
                 }
-                if (imageData.decimal) {
-                    jobPromises.push(
-                        scheduler.addJob('recognize', imageData.decimal).then(result => ({result, index, part: 'decimal'}))
-                    );
+                const urls: string[] = [];
+                const centerIndex = Math.floor(ocrImageCount / 2);
+                const thresholdVariations = [...Array(ocrImageCount)].map((_, i) => (i - centerIndex) * thresholdStep);
+                let src = null;
+                try {
+                    src = fullSrcMat.roi(new cv.Rect(x, y, width, height));
+                    for (const variation of thresholdVariations) {
+                        let dst = null;
+                        try {
+                            dst = new cv.Mat();
+                            const dsize = new cv.Size(Math.round(width * rect.scaleX), Math.round(height * rect.scaleY));
+                            cv.resize(src, dst, dsize, 0, 0, cv.INTER_LANCZOS4);
+                            cv.cvtColor(dst, dst, cv.COLOR_RGBA2GRAY, 0);
+                            const thresholdType = rect.negative ? cv.THRESH_BINARY_INV : cv.THRESH_BINARY;
+                            const currentThreshold = rect.threshold + variation;
+                            const clampedThreshold = Math.max(0, Math.min(255, currentThreshold));
+                            cv.threshold(dst, dst, clampedThreshold, 255, thresholdType);
+                            const tempCanvas = document.createElement('canvas');
+                            cv.imshow(tempCanvas, dst);
+                            urls.push(tempCanvas.toDataURL());
+                        } finally {
+                            dst?.delete();
+                        }
+                    }
+                } finally {
+                    src?.delete();
+                }
+                return urls;
+            };
+
+            const jobPromises: Promise<{ result: any, index: number, part: 'integer' | 'decimal' }>[] = [];
+            selections.forEach((rect, index) => {
+                generateUrlsWithVariations(rect, rect.x, rect.y, rect.width, rect.height)
+                    .forEach(url => jobPromises.push(scheduler.addJob('recognize', url).then(result => ({ result, index, part: 'integer' }))));
+
+                const isSplit = ['NOTES', 'CHORD', 'PEAK', 'CHARGE', 'SCRATCH', 'SOF-LAN'].includes(rect.label);
+                if (isSplit && rect.x2 && rect.y2 && rect.width2 && rect.height2) {
+                    generateUrlsWithVariations(rect, rect.x2, rect.y2, rect.width2, rect.height2)
+                        .forEach(url => jobPromises.push(scheduler.addJob('recognize', url).then(result => ({ result, index, part: 'decimal' }))));
                 }
             });
 
             const jobResults = await Promise.all(jobPromises);
 
+            console.log(jobResults.map(e => e.result.data.text).join(''))
+
             const finalResults = Array(selections.length).fill('');
-            const tempResults: { [key: number]: { integer?: string, decimal?: string } } = {};
+            // This structure will hold arrays of results for voting
+            const tempResults: { [key: number]: { integer?: string[], decimal?: string[] } } = {};
 
             jobResults.forEach(job => {
                 if (!tempResults[job.index]) tempResults[job.index] = {};
-                tempResults[job.index][job.part] = job.result.data.text.trim();
+                if (!tempResults[job.index][job.part]) tempResults[job.index][job.part] = [];
+                tempResults[job.index][job.part]!.push(job.result.data.text.trim());
             });
 
             for (let i = 0; i < selections.length; i++) {
                 const res = tempResults[i];
                 if (res) {
-                    finalResults[i] = (res.decimal !== undefined) ? `${res.integer || ''}.${res.decimal || ''}` : (res.integer || '');
+                    const finalInteger = res.integer ? getMostFrequent(res.integer) : '';
+                    const finalDecimal = res.decimal ? getMostFrequent(res.decimal) : '';
+                    finalResults[i] = (res.decimal !== undefined) ? `${finalInteger}.${finalDecimal}` : finalInteger;
                 }
             }
 
@@ -690,10 +754,11 @@ export function App() {
             console.error('OCR Error:', error);
             setOcrResults(Array(selections.length).fill('Error'));
         } finally {
+            fullSrcMat.delete();
             await scheduler.terminate();
             setIsOcrRunning(false);
         }
-    }, [processedImages, selections, isOcrRunning]);
+    }, [selections, isOcrRunning, capturedImage, isCvReady, ocrImageCount, thresholdStep]);
 
     useEffect(() => {
         if (shouldRunOcr && processedImages.length > 0 && !isOcrRunning) {
@@ -725,6 +790,7 @@ export function App() {
                 .replace(/¢/g, '2')
                 .replace(/A/g, '4')
                 .replace(/q/g, '4')
+                .replace(/y/g, '4')
                 .replace(/a/g, '5')
                 .replace(/S/g, '5')
                 .replace(/s/g, '5')
@@ -732,6 +798,8 @@ export function App() {
                 .replace(/b/g, '6')
                 .replace(/G/g, '6')
                 .replace(/B/g, '8')
+                .replace(/Q/g, '9')
+                .replace(/g/g, '9')
                 .replace(/O/g, '0')
                 .replace(/o/g, '0')
                 .replace(/D/g, '0');
@@ -879,19 +947,21 @@ export function App() {
                 if (width <= 0 || height <= 0 || rect.scaleX <= 0 || rect.scaleY <= 0) {
                     return '';
                 }
+
+                if (x + width > fullSrcMat.cols || y + height > fullSrcMat.rows) {
+                    return '';
+                }
+
                 let src = null;
                 let dst = null;
                 try {
-                    // Use roi to get the sub-image from the full clean Mat
                     src = fullSrcMat.roi(new cv.Rect(x, y, width, height));
                     dst = new cv.Mat();
-
                     const dsize = new cv.Size(Math.round(width * rect.scaleX), Math.round(height * rect.scaleY));
                     cv.resize(src, dst, dsize, 0, 0, cv.INTER_LANCZOS4);
                     cv.cvtColor(dst, dst, cv.COLOR_RGBA2GRAY, 0);
                     const thresholdType = rect.negative ? cv.THRESH_BINARY_INV : cv.THRESH_BINARY;
                     cv.threshold(dst, dst, rect.threshold, 255, thresholdType);
-
                     const tempCanvas = document.createElement('canvas');
                     cv.imshow(tempCanvas, dst);
                     return tempCanvas.toDataURL();
@@ -916,7 +986,7 @@ export function App() {
         // Clean up the full Mat
         fullSrcMat.delete();
 
-    }, [selections, capturedImage, isCvReady]); // Removed perspectivePoints from dependencies
+    }, [selections, capturedImage, isCvReady]);
 
 
     // Effect to draw on main canvas
@@ -1111,6 +1181,18 @@ export function App() {
                                             style={{marginLeft: '10px'}}>
                                         {isOcrRunning ? 'Processing...' : 'Run OCR (Space)'}
                                     </button>
+                                    <label>
+                                        閾値ステップ:
+                                        <input type="number" value={thresholdStep} min={1}
+                                               onChange={(e) => setThresholdStep(parseInt(e.target.value, 10) || 1)}
+                                               style={{width: '50px', marginLeft: '5px'}}/>
+                                    </label>
+                                    <label>
+                                        OCR試行回数:
+                                        <input type="number" value={ocrImageCount} min={1}
+                                               onChange={(e) => setOcrImageCount(parseInt(e.target.value, 10) || 1)}
+                                               style={{width: '50px', marginLeft: '5px'}}/>
+                                    </label>
                                     <button onClick={handleAddToOutput} style={{marginLeft: '10px'}}>
                                         出力に追加 (Enter)
                                     </button>
