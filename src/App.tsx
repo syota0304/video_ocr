@@ -77,6 +77,7 @@ const defaultSelections: SelectionRect[] = [
         height: 42,
         scaleX: 1,
         scaleY: 1,
+        threshold: 120,
     },
     {
         label: 'ARTIST',
@@ -86,6 +87,15 @@ const defaultSelections: SelectionRect[] = [
         height: 42,
         scaleX: 1,
         scaleY: 1,
+        threshold: 160,
+    },
+    {
+        label: 'DIFFICULTY',
+        x: 980,
+        y: 480,
+        width: 150,
+        height: 25,
+        threshold: 120,
     },
     {
         label: 'NOTES',
@@ -164,6 +174,8 @@ const defaultPerspectivePoints = [
 
 type outputData = {
     musicId: number;
+    playStyle: number;
+    difficulty: number;
     notes: number;
     chord: number;
     peak: number;
@@ -197,7 +209,7 @@ export function App() {
     const [processedImages, setProcessedImages] = useState<{ integer: string, decimal?: string }[]>([]);
     const [redrawTarget, setRedrawTarget] = useState<{ index: number, part: 'integer' | 'decimal' } | null>(null);
     const [isSeeking, setIsSeeking] = useState(false);
-    const [skipFramesAfterChange, setSkipFramesAfterChange] = useState(10);
+    const [skipFramesAfterChange, setSkipFramesAfterChange] = useState(3);
     const [autoOcrAfterChange, setAutoOcrAfterChange] = useState(true);
     const [shouldRunOcr, setShouldRunOcr] = useState(false);
     const [diffThreshold, setDiffThreshold] = useState(20);
@@ -212,6 +224,7 @@ export function App() {
     const [isSettingPerspective, setIsSettingPerspective] = useState(false);
     const [outputData, setOutputData] = useState<outputData[]>([]);
 
+    const [playStyle, setPlayStyle] = useState(0);
     const [addOutputMessage, setAddOutputMessage] = useState('');
     const [addOutputMessageType, setAddOutputMessageType] = useState<'success' | 'error'>('success');
     const [correctionInputErrors, setCorrectionInputErrors] = useState<string[]>([]);
@@ -247,6 +260,7 @@ export function App() {
             setShouldRunOcr(false);
             setPerspectivePoints(defaultPerspectivePoints);
             setOutputData([]);
+            setPlayStyle(0);
             setIsSettingPerspective(false);
         }
     };
@@ -522,24 +536,45 @@ export function App() {
             }
         }
 
+        if (playStyle === 0) {
+            alert('プレースタイルが選択されていません。');
+            return;
+        }
+
         if (newErrors.some(e => e !== '')) {
             setCorrectionInputErrors(newErrors);
             setTimeout(() => setCorrectionInputErrors(Array(selections.length).fill('')), 3000);
             return;
         }
 
+        const difficultyValue = getCorrectionValue('DIFFICULTY');
+        const difficultyMap: { [key: string]: number } = { 'B': 1, 'N': 2, 'H': 3, 'A': 4, 'L': 5 };
+        const difficulty = difficultyValue ? difficultyMap[difficultyValue] : 0;
+        if (difficulty === 0) {
+            const diffIndex = selections.findIndex(s => s.label === 'DIFFICULTY');
+            if (diffIndex !== -1) {
+                newErrors[diffIndex] = '難易度が選択されていません。';
+            }
+        }
+
         const title = titleIndex !== -1 ? selectedCorrections[titleIndex] : '';
 
         // Check for duplicates
-        if (outputData.some(item => item.musicId === musicId)) {
+        if (outputData.some(item => item.musicId === musicId && item.difficulty === difficulty)) {
             setAddOutputMessageType('error');
-            setAddOutputMessage(`Music ID ${musicId} は既に追加されています。`);
+            setAddOutputMessage(`${title} (${difficultyValue})は既に追加されています。`);
             setTimeout(() => setAddOutputMessage(''), 3000);
+            return;
+        }
+
+        if(musicId === null){
             return;
         }
 
         const newOutput: outputData = {
             musicId: musicId,
+            playStyle: playStyle,
+            difficulty: difficulty,
             notes: validatedValues.notes,
             chord: validatedValues.chord,
             peak: validatedValues.peak,
@@ -552,10 +587,10 @@ export function App() {
 
         if (title) {
             setAddOutputMessageType('success');
-            setAddOutputMessage(`${title}を追加しました`);
+            setAddOutputMessage(`${title} (${difficultyValue})を追加しました`);
             setTimeout(() => setAddOutputMessage(''), 3000);
         }
-    }, [selections, selectedCorrections, selectedCorrectionIds, outputData]);
+    }, [selections, playStyle, selectedCorrections, outputData, selectedCorrectionIds]);
 
     const findNextChange = useCallback(async () => {
         const video = videoRef.current;
@@ -715,6 +750,8 @@ export function App() {
 
             const jobPromises: Promise<{ result: any, index: number, part: 'integer' | 'decimal' }>[] = [];
             selections.forEach((rect, index) => {
+                if (rect.label === 'DIFFICULTY') return; // Skip Tesseract for DIFFICULTY
+
                 generateUrlsWithVariations(rect, rect.x, rect.y, rect.width, rect.height)
                     .forEach(url => jobPromises.push(scheduler.addJob('recognize', url).then(result => ({ result, index, part: 'integer' }))));
 
@@ -745,6 +782,67 @@ export function App() {
                     const finalInteger = res.integer ? getMostFrequent(res.integer) : '';
                     const finalDecimal = res.decimal ? getMostFrequent(res.decimal) : '';
                     finalResults[i] = (res.decimal !== undefined) ? `${finalInteger}.${finalDecimal}` : finalInteger;
+                }
+            }
+
+            // --- Hue Calculation for DIFFICULTY ---
+            const difficultyIndex = selections.findIndex(s => s.label === 'DIFFICULTY');
+            if (difficultyIndex !== -1) {
+                const rect = selections[difficultyIndex];
+                let roi = null, hsv = null, mask = null, low = null, high = null;
+                try {
+                    if (rect.x + rect.width <= fullSrcMat.cols && rect.y + rect.height <= fullSrcMat.rows) {
+                        roi = fullSrcMat.roi(new cv.Rect(rect.x, rect.y, rect.width, rect.height));
+                        hsv = new cv.Mat();
+                        cv.cvtColor(roi, hsv, cv.COLOR_RGBA2RGB);
+                        cv.cvtColor(hsv, hsv, cv.COLOR_RGB2HSV);
+
+                        mask = new cv.Mat();
+                        low = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [0, rect.threshold, 0, 0]);
+                        high = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [180, 255, 255, 255]);
+                        cv.inRange(hsv, low, high, mask);
+
+                        const nonZeroPixels = cv.countNonZero(mask);
+                        if (nonZeroPixels > 0) {
+                            // --- More robust Hue detection by classifying each pixel ---
+                            const targetHues = {
+                                B: 69,
+                                N: 102,
+                                H: 20,
+                                A: 0,
+                                L: 136
+                            };
+
+                            const counts = { B: 0, N: 0, H: 0, R: 0, L: 0 };
+
+                            for (let i = 0; i < hsv.rows; i++) {
+                                for (let j = 0; j < hsv.cols; j++) {
+                                    if (mask.ucharPtr(i, j)[0] !== 0) {
+                                        const pixelHue = hsv.ucharPtr(i, j)[0];
+                                        let minDistance = Infinity;
+                                        let closestColor: keyof typeof counts = 'B';
+
+                                        for (const [color, targetHue] of Object.entries(targetHues)) {
+                                            const dist = Math.min(Math.abs(pixelHue - targetHue), 180 - Math.abs(pixelHue - targetHue));
+                                            if (dist < minDistance) {
+                                                minDistance = dist;
+                                                closestColor = color as keyof typeof counts;
+                                            }
+                                        }
+                                        counts[closestColor]++;
+                                    }
+                                }
+                            }
+
+                            const mostFrequentColor = Object.keys(counts).reduce((a, b) => counts[a as keyof typeof counts] > counts[b as keyof typeof counts] ? a : b);
+                            finalResults[difficultyIndex] = mostFrequentColor;
+
+                        } else {
+                            finalResults[difficultyIndex] = "N/A";
+                        }
+                    }
+                } finally {
+                    roi?.delete(); hsv?.delete(); mask?.delete(); low?.delete(); high?.delete();
                 }
             }
 
@@ -822,7 +920,9 @@ export function App() {
         const newSuggestions: Array<Array<{
             title: string,
             id: number,
-            distance: number
+            distance: number,
+            titleDistance: number,
+            artistDistance: number,
         }>> = Array.from({length: selections.length}, () => []);
         const newSelectedCorrections: (string | null)[] = Array(selections.length).fill(null);
         const newSelectedCorrectionIds: (number | null)[] = Array(selections.length).fill(null);
@@ -833,7 +933,9 @@ export function App() {
 
         ocrResults.forEach((ocrText, index) => {
             const selectionLabel = selections[index]?.label;
-            if (selectionLabel === 'TITLE' && titleMasterData.length > 0) {
+            if (selectionLabel === 'DIFFICULTY') {
+                newSelectedCorrections[index] = ocrText; // The result is the calculated hue value
+            } else if (selectionLabel === 'TITLE' && titleMasterData.length > 0) {
                 const titleOcrText = ocrText.trim();
 
                 const suggestions = titleMasterData.map(masterItem => {
@@ -956,12 +1058,55 @@ export function App() {
                 let dst = null;
                 try {
                     src = fullSrcMat.roi(new cv.Rect(x, y, width, height));
-                    dst = new cv.Mat();
-                    const dsize = new cv.Size(Math.round(width * rect.scaleX), Math.round(height * rect.scaleY));
-                    cv.resize(src, dst, dsize, 0, 0, cv.INTER_LANCZOS4);
-                    cv.cvtColor(dst, dst, cv.COLOR_RGBA2GRAY, 0);
-                    const thresholdType = rect.negative ? cv.THRESH_BINARY_INV : cv.THRESH_BINARY;
-                    cv.threshold(dst, dst, rect.threshold, 255, thresholdType);
+                    if (rect.label === 'DIFFICULTY') {
+                        const hsv = new cv.Mat();
+                        cv.cvtColor(src, hsv, cv.COLOR_RGBA2RGB);
+                        cv.cvtColor(hsv, hsv, cv.COLOR_RGB2HSV);
+
+                        const mask = new cv.Mat();
+                        const low = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [0, rect.threshold, 0, 0]);
+                        const high = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [180, 255, 255, 255]);
+                        cv.inRange(hsv, low, high, mask);
+
+                        dst = new cv.Mat();
+                        cv.bitwise_and(src, src, dst, mask);
+
+                        // Find contours to crop the image to the visible part
+                        const contours = new cv.MatVector();
+                        const hierarchy = new cv.Mat();
+                        cv.findContours(mask, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+                        if (contours.size() > 0) {
+                            let x_min = canvasRef.current.width, y_min = canvasRef.current.height, x_max = 0, y_max = 0;
+                            for (let i = 0; i < contours.size(); ++i) {
+                                const rect = cv.boundingRect(contours.get(i));
+                                x_min = Math.min(x_min, rect.x);
+                                y_min = Math.min(y_min, rect.y);
+                                x_max = Math.max(x_max, rect.x + rect.width);
+                                y_max = Math.max(y_max, rect.y + rect.height);
+                            }
+                            if (x_max > x_min && y_max > y_min) {
+                                const rect = new cv.Rect(x_min, y_min, x_max - x_min, y_max - y_min);
+                                const clippedDst = dst.roi(rect);
+                                // Replace dst with the clipped version
+                                dst.delete();
+                                dst = clippedDst;
+                            }
+                        }
+                        contours.delete();
+                        hierarchy.delete();
+
+                        hsv.delete();
+                        mask.delete();
+                        low.delete();
+                        high.delete();
+                    } else {
+                        dst = new cv.Mat();
+                        const dsize = new cv.Size(Math.round(width * rect.scaleX), Math.round(height * rect.scaleY));
+                        cv.resize(src, dst, dsize, 0, 0, cv.INTER_LANCZOS4);
+                        cv.cvtColor(dst, dst, cv.COLOR_RGBA2GRAY, 0);
+                        const thresholdType = rect.negative ? cv.THRESH_BINARY_INV : cv.THRESH_BINARY;
+                        cv.threshold(dst, dst, rect.threshold, 255, thresholdType);
+                    }
                     const tempCanvas = document.createElement('canvas');
                     cv.imshow(tempCanvas, dst);
                     return tempCanvas.toDataURL();
@@ -1110,6 +1255,11 @@ export function App() {
                                 {isSettingPerspective ? `点をクリックしてください (${perspectivePoints.length}/4)` : `${perspectivePoints.length === 4 ? '設定済' : '未設定'}`}
                                 {perspectivePoints.length === 4 && perspectivePoints.map((p) =>
                                     (`(${p.x.toFixed(0)},${p.y.toFixed(0)})`)).join(", ")}
+                            </label>
+                            <label style={{marginLeft: '20px'}}>
+                                プレースタイル:
+                                <label style={{marginLeft: '5px'}}><input type="radio" name="playStyle" value={1} checked={playStyle === 1} onChange={(e) => setPlayStyle(parseInt(e.target.value, 10))} /> SP</label>
+                                <label style={{marginLeft: '5px'}}><input type="radio" name="playStyle" value={2} checked={playStyle === 2} onChange={(e) => setPlayStyle(parseInt(e.target.value, 10))} /> DP</label>
                             </label>
                         </div>
                         <div style={{
@@ -1357,7 +1507,26 @@ export function App() {
                                                                 fontSize: '0.9em'
                                                             }}>{correctionInputErrors[index]}</span>}
                                                         </div>
-                                                    ) :selections[index].label === 'ARTIST'?(<>
+                                                    ) : selections[index].label === 'DIFFICULTY' ? (
+                                                        <div style={{whiteSpace: 'nowrap'}}>
+                                                            {['B', 'N', 'H', 'A', 'L'].map(level => (
+                                                                <label key={level} style={{marginRight: '5px'}}>
+                                                                    <input
+                                                                        type="radio"
+                                                                        name={`difficulty-${index}`}
+                                                                        value={level}
+                                                                        checked={selectedCorrections[index] === level}
+                                                                        onChange={(e) => {
+                                                                            const newSelected = [...selectedCorrections];
+                                                                            newSelected[index] = e.target.value;
+                                                                            setSelectedCorrections(newSelected);
+                                                                        }}
+                                                                    />
+                                                                    {level}
+                                                                </label>
+                                                            ))}
+                                                        </div>
+                                                    ) : selections[index].label === 'ARTIST' ? (<>
                                                         {titleMasterData.find(e=>e.id === (selectedCorrectionIds[0]))?.artist}
                                                     </>): (
                                                         <div style={{
