@@ -699,7 +699,6 @@ export function App() {
         setIsOcrRunning(true);
         setOcrResults(Array(selections.length).fill('Processing...'));
 
-        const scheduler = Tesseract.createScheduler();
         const cv = cvRef.current;
         if (!cv) {
             setIsOcrRunning(false);
@@ -708,11 +707,21 @@ export function App() {
 
         const fullSrcMat = cv.matFromImageData(capturedImage);
 
+        let engWorker: Tesseract.Worker | null = null;
+        let jpnWorker: Tesseract.Worker | null = null;
+
         try {
-            const worker = await Tesseract.createWorker('eng', 1, {
+            // Create workers for both English and Japanese
+            engWorker = await Tesseract.createWorker('eng', 1, {
                 // logger: m => console.log(m),
             });
-            scheduler.addWorker(worker);
+            jpnWorker = await Tesseract.createWorker('jpn', 1, {
+                // logger: m => console.log(m),
+            });
+
+            if(engWorker === null || jpnWorker === null) {
+                return;
+            }
 
             const generateUrlsWithVariations = (rect: SelectionRect, x: number, y: number, width: number, height: number): string[] => {
                 if (!fullSrcMat || fullSrcMat.empty() || width <= 0 || height <= 0 || x + width > fullSrcMat.cols || y + height > fullSrcMat.rows) {
@@ -748,40 +757,65 @@ export function App() {
                 return urls;
             };
 
-            const jobPromises: Promise<{ result: any, index: number, part: 'integer' | 'decimal' }>[] = [];
+            const jobPromises: Promise<any>[] = [];
             selections.forEach((rect, index) => {
                 if (rect.label === 'DIFFICULTY') return; // Skip Tesseract for DIFFICULTY
 
-                generateUrlsWithVariations(rect, rect.x, rect.y, rect.width, rect.height)
-                    .forEach(url => jobPromises.push(scheduler.addJob('recognize', url).then(result => ({ result, index, part: 'integer' }))));
+                if (rect.label === 'TITLE' || rect.label === 'ARTIST') {
+                    // For TITLE and ARTIST, run both jpn and eng workers
+                    generateUrlsWithVariations(rect, rect.x, rect.y, rect.width, rect.height)
+                        .forEach(url => {
+                            jobPromises.push(jpnWorker.recognize(url).then(result => ({ result, index, part: 'integer', lang: 'jpn' })));
+                            jobPromises.push(engWorker.recognize(url).then(result => ({ result, index, part: 'integer', lang: 'eng' })));
+                        });
+                } else {
+                    // For other labels, run only eng worker
+                    generateUrlsWithVariations(rect, rect.x, rect.y, rect.width, rect.height)
+                        .forEach(url => jobPromises.push(engWorker.recognize(url).then(result => ({ result, index, part: 'integer', lang: 'eng' }))));
 
-                const isSplit = ['NOTES', 'CHORD', 'PEAK', 'CHARGE', 'SCRATCH', 'SOF-LAN'].includes(rect.label);
-                if (isSplit && rect.x2 && rect.y2 && rect.width2 && rect.height2) {
-                    generateUrlsWithVariations(rect, rect.x2, rect.y2, rect.width2, rect.height2)
-                        .forEach(url => jobPromises.push(scheduler.addJob('recognize', url).then(result => ({ result, index, part: 'decimal' }))));
+                    const isSplit = ['NOTES', 'CHORD', 'PEAK', 'CHARGE', 'SCRATCH', 'SOF-LAN'].includes(rect.label);
+                    if (isSplit && rect.x2 && rect.y2 && rect.width2 && rect.height2) {
+                        generateUrlsWithVariations(rect, rect.x2, rect.y2, rect.width2, rect.height2)
+                            .forEach(url => jobPromises.push(engWorker.recognize(url).then(result => ({ result, index, part: 'decimal', lang: 'eng' }))));
+                    }
                 }
             });
 
             const jobResults = await Promise.all(jobPromises);
 
-            console.log(jobResults.map(e => e.result.data.text).join(''))
-
             const finalResults = Array(selections.length).fill('');
             // This structure will hold arrays of results for voting
-            const tempResults: { [key: number]: { integer?: string[], decimal?: string[] } } = {};
+            const tempResults: { [key: number]: { integer?: { jpn?: string[], eng?: string[] }, decimal?: { jpn?: string[], eng?: string[] } } } = {};
 
             jobResults.forEach(job => {
                 if (!tempResults[job.index]) tempResults[job.index] = {};
-                if (!tempResults[job.index][job.part]) tempResults[job.index][job.part] = [];
-                tempResults[job.index][job.part]!.push(job.result.data.text.trim());
+                if (!tempResults[job.index][job.part]) tempResults[job.index][job.part] = {};
+                if (!tempResults[job.index][job.part]![job.lang]) tempResults[job.index][job.part]![job.lang] = [];
+
+                let ocrText = job.result.data.text.trim();
+                const selection = selections[job.index];
+
+                if (selection.label === 'TITLE' || selection.label === 'ARTIST') {
+                    ocrText = ocrText.replaceAll(/(?<=[^ -~｡-ﾟ]) (?=[^ -~｡-ﾟ])/g, ''); // Remove spaces between full-width characters
+                }
+                tempResults[job.index][job.part]![job.lang]!.push(ocrText);
             });
 
             for (let i = 0; i < selections.length; i++) {
                 const res = tempResults[i];
                 if (res) {
-                    const finalInteger = res.integer ? getMostFrequent(res.integer) : '';
-                    const finalDecimal = res.decimal ? getMostFrequent(res.decimal) : '';
-                    finalResults[i] = (res.decimal !== undefined) ? `${finalInteger}.${finalDecimal}` : finalInteger;
+                    const selection = selections[i];
+                    if (selection.label === 'TITLE' || selection.label === 'ARTIST') {
+                        // For TITLE/ARTIST, pass both results to the next step
+                        finalResults[i] = {
+                            jpn: res.integer?.jpn ? getMostFrequent(res.integer.jpn) : '',
+                            eng: res.integer?.eng ? getMostFrequent(res.integer.eng) : '',
+                        };
+                    } else {
+                        const finalInteger = res.integer?.eng ? getMostFrequent(res.integer.eng) : '';
+                        const finalDecimal = res.decimal?.eng ? getMostFrequent(res.decimal.eng) : '';
+                        finalResults[i] = (res.decimal !== undefined) ? `${finalInteger}.${finalDecimal}` : finalInteger;
+                    }
                 }
             }
 
@@ -813,7 +847,7 @@ export function App() {
                                 L: 136
                             };
 
-                            const counts = { B: 0, N: 0, H: 0, R: 0, L: 0 };
+                            const counts = { B: 0, N: 0, H: 0, A: 0, L: 0 };
 
                             for (let i = 0; i < hsv.rows; i++) {
                                 for (let j = 0; j < hsv.cols; j++) {
@@ -853,7 +887,8 @@ export function App() {
             setOcrResults(Array(selections.length).fill('Error'));
         } finally {
             fullSrcMat.delete();
-            await scheduler.terminate();
+            if (engWorker) await engWorker.terminate();
+            if (jpnWorker) await jpnWorker.terminate();
             setIsOcrRunning(false);
         }
     }, [selections, isOcrRunning, capturedImage, isCvReady, ocrImageCount, thresholdStep]);
@@ -929,25 +964,34 @@ export function App() {
 
         // Find artist OCR result once
         const artistIndex = selections.findIndex(s => s.label === 'ARTIST');
-        const artistOcrText = artistIndex !== -1 ? ocrResults[artistIndex]?.trim() : '';
+        const artistOcrResult = artistIndex !== -1 ? ocrResults[artistIndex] : null;
 
         ocrResults.forEach((ocrText, index) => {
             const selectionLabel = selections[index]?.label;
             if (selectionLabel === 'DIFFICULTY') {
                 newSelectedCorrections[index] = ocrText; // The result is the calculated hue value
             } else if (selectionLabel === 'TITLE' && titleMasterData.length > 0) {
-                const titleOcrText = ocrText.trim();
+                const titleOcrResult = ocrText; // This is now an object {jpn, eng}
 
                 const suggestions = titleMasterData.map(masterItem => {
-                    const titleDistance = titleOcrText.length > 0 ? getLevenshteinDistance(titleOcrText, masterItem.title) : 0;
-                    const artistDistance = artistOcrText?.length > 0 ? getLevenshteinDistance(artistOcrText, masterItem.artist) : 0;
-                    const totalDistance = titleDistance + artistDistance;
+                    const titleDistJpn = (titleOcrResult.jpn?.length > 0) ? getLevenshteinDistance(titleOcrResult.jpn, masterItem.title) : Infinity;
+                    const titleDistEng = (titleOcrResult.eng?.length > 0) ? getLevenshteinDistance(titleOcrResult.eng, masterItem.title) : Infinity;
+                    const titleDist = (titleDistJpn < titleDistEng) ? titleDistJpn : titleDistEng;
+
+                    const artistDistJpn = (artistOcrResult?.jpn?.length > 0) ? getLevenshteinDistance(artistOcrResult.jpn, masterItem.artist) : Infinity;
+                    const artistDistEng = (artistOcrResult?.eng?.length > 0) ? getLevenshteinDistance(artistOcrResult.eng, masterItem.artist) : Infinity;
+                    const artistDist = (artistDistJpn < artistDistEng) ? artistDistJpn : artistDistEng;
+
+                    // Use the better of the two language results
+                    const totalDistance = (titleDist === Infinity ? 0 : titleDist) + (artistDist === Infinity ? 0 : artistDist);
+                    
                     return {
                         title: masterItem.title,
+                        artist: masterItem.artist,
                         id: masterItem.id,
                         distance: totalDistance,
-                        titleDistance: titleDistance,
-                        artistDistance: artistDistance,
+                        titleDistance: titleDist,
+                        artistDistance: artistDist,
                     };
                 }).sort((a, b) => a.distance - b.distance).slice(0, 20);
 
@@ -1446,7 +1490,11 @@ export function App() {
                                                         }
                                                     </div>
                                                 </td>
-                                                <td style={{whiteSpace: "nowrap"}}>{ocrResults[index] || ''}</td>
+                                                <td style={{whiteSpace: "pre"}}>
+                                                    {typeof ocrResults[index] === 'object' && ocrResults[index] !== null
+                                                        ? `EN: ${ocrResults[index].eng}\nJP: ${ocrResults[index].jpn}`
+                                                        : ocrResults[index] || ''}
+                                                </td>
                                                 <td>
                                                     {selections[index].label === 'TITLE' ? (
                                                         <div style={{
@@ -1527,7 +1575,7 @@ export function App() {
                                                             ))}
                                                         </div>
                                                     ) : selections[index].label === 'ARTIST' ? (<>
-                                                        {titleMasterData.find(e=>e.id === (selectedCorrectionIds[0]))?.artist}
+                                                        {correctionSuggestions[0]?.find(s => s.id === selectedCorrectionIds[0])?.artist}
                                                     </>): (
                                                         <div style={{
                                                             display: 'flex',
