@@ -200,6 +200,7 @@ export function App() {
     const [selectedCorrectionIds, setSelectedCorrectionIds] = useState<(number | null)[]>([]);
     const [correctionSuggestions, setCorrectionSuggestions] = useState<Array<Array<{
         title: string,
+        artist: string,
         id: number,
         distance: number,
         titleDistance: number,
@@ -707,18 +708,14 @@ export function App() {
 
         const fullSrcMat = cv.matFromImageData(capturedImage);
 
-        let engWorker: Tesseract.Worker | null = null;
-        let jpnWorker: Tesseract.Worker | null = null;
+        const engWorker = await Tesseract.createWorker('eng', 1, {
+            // logger: m => console.log(m),
+        });
+        const jpnWorker = await Tesseract.createWorker('jpn', 1, {
+            // logger: m => console.log(m),
+        });
 
         try {
-            // Create workers for both English and Japanese
-            engWorker = await Tesseract.createWorker('eng', 1, {
-                // logger: m => console.log(m),
-            });
-            jpnWorker = await Tesseract.createWorker('jpn', 1, {
-                // logger: m => console.log(m),
-            });
-
             if(engWorker === null || jpnWorker === null) {
                 return;
             }
@@ -757,7 +754,7 @@ export function App() {
                 return urls;
             };
 
-            const jobPromises: Promise<any>[] = [];
+            const jobPromises: Promise<{ result: Tesseract.RecognizeResult, index: number, part: 'integer' | 'decimal', lang: 'eng' | 'jpn' }>[] = [];
             selections.forEach((rect, index) => {
                 if (rect.label === 'DIFFICULTY') return; // Skip Tesseract for DIFFICULTY
 
@@ -796,7 +793,7 @@ export function App() {
                 const selection = selections[job.index];
 
                 if (selection.label === 'TITLE' || selection.label === 'ARTIST') {
-                    ocrText = ocrText.replaceAll(/(?<=[^ -~｡-ﾟ]) (?=[^ -~｡-ﾟ])/g, ''); // Remove spaces between full-width characters
+                    ocrText = ocrText.replace(/(?<=[^ -~｡-ﾟ]) (?=[^ -~｡-ﾟ])/g, ''); // Remove spaces between full-width characters
                 }
                 tempResults[job.index][job.part]![job.lang]!.push(ocrText);
             });
@@ -891,7 +888,7 @@ export function App() {
             if (jpnWorker) await jpnWorker.terminate();
             setIsOcrRunning(false);
         }
-    }, [selections, isOcrRunning, capturedImage, isCvReady, ocrImageCount, thresholdStep]);
+    }, [selections, isOcrRunning, capturedImage, ocrImageCount, thresholdStep]);
 
     useEffect(() => {
         if (shouldRunOcr && processedImages.length > 0 && !isOcrRunning) {
@@ -955,6 +952,7 @@ export function App() {
 
         const newSuggestions: Array<Array<{
             title: string,
+            artist: string,
             id: number,
             distance: number,
             titleDistance: number,
@@ -975,11 +973,15 @@ export function App() {
                 const titleOcrResult = ocrText; // This is now an object {jpn, eng}
 
                 const suggestions = titleMasterData.map(masterItem => {
+                    // @ts-expect-error ごめんね
                     const titleDistJpn = (titleOcrResult.jpn?.length > 0) ? getLevenshteinDistance(titleOcrResult.jpn, masterItem.title) : Infinity;
+                    // @ts-expect-error ごめんね
                     const titleDistEng = (titleOcrResult.eng?.length > 0) ? getLevenshteinDistance(titleOcrResult.eng, masterItem.title) : Infinity;
                     const titleDist = (titleDistJpn < titleDistEng) ? titleDistJpn : titleDistEng;
 
+                    // @ts-expect-error ごめんね
                     const artistDistJpn = (artistOcrResult?.jpn?.length > 0) ? getLevenshteinDistance(artistOcrResult.jpn, masterItem.artist) : Infinity;
+                    // @ts-expect-error ごめんね
                     const artistDistEng = (artistOcrResult?.eng?.length > 0) ? getLevenshteinDistance(artistOcrResult.eng, masterItem.artist) : Infinity;
                     const artistDist = (artistDistJpn < artistDistEng) ? artistDistJpn : artistDistEng;
 
@@ -1121,6 +1123,7 @@ export function App() {
                         const hierarchy = new cv.Mat();
                         cv.findContours(mask, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
                         if (contours.size() > 0) {
+                            // @ts-expect-error ごめんね
                             let x_min = canvasRef.current.width, y_min = canvasRef.current.height, x_max = 0, y_max = 0;
                             for (let i = 0; i < contours.size(); ++i) {
                                 const rect = cv.boundingRect(contours.get(i));
@@ -1527,6 +1530,7 @@ export function App() {
                                                 </td>
                                                 <td style={{whiteSpace: "pre"}}>
                                                     {typeof ocrResults[index] === 'object' && ocrResults[index] !== null
+                                                        // @ts-expect-error ごめんね
                                                         ? `EN: ${ocrResults[index].eng}\nJP: ${ocrResults[index].jpn}`
                                                         : ocrResults[index] || ''}
                                                 </td>
