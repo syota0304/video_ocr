@@ -935,7 +935,8 @@ export function App() {
                 .replace(/g/g, '9')
                 .replace(/O/g, '0')
                 .replace(/o/g, '0')
-                .replace(/D/g, '0');
+                .replace(/D/g, '0')
+                .replace(/\.\./g, '.');
 
 
             text = text.replace(/[^0-9.]/g, "")
@@ -984,7 +985,7 @@ export function App() {
 
                     // Use the better of the two language results
                     const totalDistance = (titleDist === Infinity ? 0 : titleDist) + (artistDist === Infinity ? 0 : artistDist);
-                    
+
                     return {
                         title: masterItem.title,
                         artist: masterItem.artist,
@@ -1280,7 +1281,7 @@ export function App() {
                         <button onClick={handleImportSettings}>設定をインポート</button>
                     </div>
                 </div>
-                <input type="file" accept="video/*" onChange={handleFileChange}/>
+                <input type="file" accept="video/*" onChange={handleFileChange} style={{width: "-webkit-fill-available"}}/>
                 {videoSrc && (
                     <div>
                         <video ref={videoRef} controls src={videoSrc} onSeeked={captureFrame}
@@ -1435,28 +1436,62 @@ export function App() {
                                                 {(() => {
                                                     const isSplit = ['NOTES', 'CHORD', 'PEAK', 'CHARGE', 'SCRATCH', 'SOF-LAN'].includes(rect.label);
                                                     return (
-                                                        <td style={{textAlign: 'center', whiteSpace: 'nowrap'}}>
-                                                            <button onClick={() => handleRedraw(index, 'integer')}
-                                                                    disabled={redrawTarget !== null || isSettingPerspective}
-                                                                    style={{display: "block"}}
-                                                            >
-                                                                {redrawTarget?.index === index && redrawTarget?.part === 'integer' ? '設定中' : (isSplit ? '整数部' : '範囲設定')}
-                                                            </button>
-                                                            {isSplit && (
-                                                                <button onClick={() => handleRedraw(index, 'decimal')}
+                                                        <>
+                                                            <td style={{textAlign: 'center', whiteSpace: 'nowrap'}}>
+                                                                <button onClick={() => handleRedraw(index, 'integer')}
                                                                         disabled={redrawTarget !== null || isSettingPerspective}
                                                                         style={{display: "block"}}
                                                                 >
-                                                                    {redrawTarget?.index === index && redrawTarget?.part === 'decimal' ? '設定中' : '小数部'}
+                                                                    {redrawTarget?.index === index && redrawTarget?.part === 'integer' ? '設定中' : (isSplit ? '整数部' : '範囲設定')}
                                                                 </button>
-                                                            )}
-                                                        </td>
+                                                                {isSplit && (
+                                                                    <button onClick={() => handleRedraw(index, 'decimal')}
+                                                                            disabled={redrawTarget !== null || isSettingPerspective}
+                                                                            style={{display: "block"}}
+                                                                    >
+                                                                        {redrawTarget?.index === index && redrawTarget?.part === 'decimal' ? '設定中' : '小数部'}
+                                                                    </button>
+                                                                )}
+                                                            </td>
+                                                            <td><input type="number" value={rect.x}
+                                                                       onChange={(e) => handleSelectionParamChange(index, 'x', parseInt(e.target.value, 10) || 0)}
+                                                                       style={{width: '50px'}}/>
+                                                                {isSplit && (
+                                                                    <input type="number" value={rect.x2}
+                                                                           onChange={(e) => handleSelectionParamChange(index, 'x2', parseInt(e.target.value, 10) || 0)}
+                                                                           style={{width: '50px'}}/>
+                                                                )}
+                                                            </td>
+                                                            <td><input type="number" value={rect.y}
+                                                                       onChange={(e) => handleSelectionParamChange(index, 'y', parseInt(e.target.value, 10) || 0)}
+                                                                       style={{width: '50px'}}/>
+                                                                {isSplit && (
+                                                                    <input type="number" value={rect.y2}
+                                                                           onChange={(e) => handleSelectionParamChange(index, 'y2', parseInt(e.target.value, 10) || 0)}
+                                                                           style={{width: '50px'}}/>
+                                                                )}
+                                                            </td>
+                                                            <td><input type="number" value={rect.width}
+                                                                       onChange={(e) => handleSelectionParamChange(index, 'width', parseInt(e.target.value, 10) || 0)}
+                                                                       style={{width: '50px'}}/>
+                                                                {isSplit && (
+                                                                    <input type="number" value={rect.width2}
+                                                                           onChange={(e) => handleSelectionParamChange(index, 'width2', parseInt(e.target.value, 10) || 0)}
+                                                                           style={{width: '50px'}}/>
+                                                                )}
+                                                            </td>
+                                                            <td><input type="number" value={rect.height}
+                                                                       onChange={(e) => handleSelectionParamChange(index, 'height', parseInt(e.target.value, 10) || 0)}
+                                                                       style={{width: '50px'}}/>
+                                                                {isSplit && (
+                                                                    <input type="number" value={rect.height2}
+                                                                           onChange={(e) => handleSelectionParamChange(index, 'height2', parseInt(e.target.value, 10) || 0)}
+                                                                           style={{width: '50px'}}/>
+                                                                )}
+                                                            </td>
+                                                        </>
                                                     );
                                                 })()}
-                                                <td>{rect.x.toFixed(0)}</td>
-                                                <td>{rect.y.toFixed(0)}</td>
-                                                <td>{rect.width.toFixed(0)}</td>
-                                                <td>{rect.height.toFixed(0)}</td>
                                                 <td>
                                                     <input type="number" value={rect.threshold}
                                                            onChange={(e) => handleSelectionParamChange(index, 'threshold', parseInt(e.target.value, 10))}
@@ -1465,12 +1500,12 @@ export function App() {
                                                 <td>
                                                     <input type="number" value={rect.scaleX}
                                                            onChange={(e) => handleSelectionParamChange(index, 'scaleX', parseFloat(e.target.value))}
-                                                           min={0.1} step={0.1} style={{width: '50px'}}/>
+                                                           min={0.1} step={0.1} style={{width: '35px'}}/>
                                                 </td>
                                                 <td>
                                                     <input type="number" value={rect.scaleY}
                                                            onChange={(e) => handleSelectionParamChange(index, 'scaleY', parseFloat(e.target.value))}
-                                                           min={0.1} step={0.1} style={{width: '50px'}}/>
+                                                           min={0.1} step={0.1} style={{width: '35px'}}/>
                                                 </td>
                                                 <td>
                                                     <div style={{
