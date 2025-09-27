@@ -561,14 +561,6 @@ export function App() {
 
         const title = titleIndex !== -1 ? selectedCorrections[titleIndex] : '';
 
-        // Check for duplicates
-        if (outputData.some(item => item.musicId === musicId && item.difficulty === difficulty)) {
-            setAddOutputMessageType('error');
-            setAddOutputMessage(`${title} (${difficultyValue})は既に追加されています。`);
-            setTimeout(() => setAddOutputMessage(''), 3000);
-            return;
-        }
-
         if(musicId === null){
             return;
         }
@@ -585,14 +577,30 @@ export function App() {
             soflan: validatedValues.soflan,
         };
 
-        setOutputData(prev => [...prev, newOutput].sort((a, b) => a.musicId - b.musicId));
+        const existingIndex = outputData.findIndex(item => item.musicId === musicId && item.difficulty === difficulty);
 
-        if (title) {
+        if (existingIndex !== -1 && addOutputMessageType === 'error' && addOutputMessage.includes('既に追加されています')) {
+            // If the error message is showing and the button is clicked again, overwrite.
+            const updatedOutput = [...outputData];
+            updatedOutput[existingIndex] = newOutput;
+            setOutputData(updatedOutput.sort((a, b) => a.musicId - b.musicId));
+            setAddOutputMessageType('success');
+            setAddOutputMessage(`${title} (${difficultyValue})を再登録しました`);
+        } else if (existingIndex !== -1) {
+            // If it exists but it's the first click, show an error.
+            setAddOutputMessageType('error');
+            setAddOutputMessage(`${title} (${difficultyValue})は既に追加されています。再登録するにはもう一度押してください。`);
+        } else {
+            // Add new data
+            setOutputData(prev => [...prev, newOutput].sort((a, b) => a.musicId - b.musicId));
             setAddOutputMessageType('success');
             setAddOutputMessage(`${title} (${difficultyValue})を追加しました`);
-            setTimeout(() => setAddOutputMessage(''), 3000);
         }
-    }, [selections, playStyle, selectedCorrections, outputData, selectedCorrectionIds]);
+
+        // Set a longer timeout for the error message to allow for a second click
+        setTimeout(() => setAddOutputMessage(''), 5000);
+
+    }, [selections, playStyle, selectedCorrections, outputData, addOutputMessageType, addOutputMessage, selectedCorrectionIds]);
 
     const findNextChange = useCallback(async () => {
         const video = videoRef.current;
