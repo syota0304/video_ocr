@@ -942,8 +942,19 @@ export function App() {
                 .replace(/D/g, '0')
                 .replace(/\.\./g, '.');
 
-
             text = text.replace(/[^0-9.]/g, "")
+
+            if (text.indexOf(".") > 3 || Number(text) > 200) {
+                let t = text.slice(0, text.indexOf("."))
+                t = t.replace(/(\d)\1+/g, match => match.slice(0, -1))
+                text = t + text.slice(text.indexOf("."), text.length)
+            }
+
+            if (text.slice(text.indexOf("."), text.length).length > 3) {
+                let t = text.slice(text.indexOf("."), text.length)
+                t = t.replace(/(\d)\1+/g, match => match.slice(0, -1))
+                text = text.slice(0, text.indexOf(".")) + t
+            }
 
             if (text.indexOf(".") > 3) {
                 const length = text.indexOf(".")
@@ -1634,7 +1645,7 @@ export function App() {
                                                             ))}
                                                         </div>
                                                     ) : selections[index].label === 'ARTIST' ? (<>
-                                                        {correctionSuggestions[0]?.find(s => s.id === selectedCorrectionIds[0])?.artist}
+                                                        {titleMasterData.find(s => s.id === selectedCorrectionIds[0])?.artist}
                                                     </>): (
                                                         <div style={{
                                                             display: 'flex',
