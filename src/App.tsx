@@ -229,6 +229,7 @@ export function App() {
     const [addOutputMessage, setAddOutputMessage] = useState('');
     const [addOutputMessageType, setAddOutputMessageType] = useState<'success' | 'error'>('success');
     const [correctionInputErrors, setCorrectionInputErrors] = useState<string[]>([]);
+    const [showSelectionDetails, setShowSelectionDetails] = useState(true);
 
     // State for master data
     type MasterData = {
@@ -711,12 +712,18 @@ export function App() {
         const engWorker = await Tesseract.createWorker('eng', 1, {
             // logger: m => console.log(m),
         });
+        await engWorker.setParameters({
+            tessedit_pageseg_mode: Tesseract.PSM.SINGLE_LINE,
+        });
         const jpnWorker = await Tesseract.createWorker('jpn', 1, {
             // logger: m => console.log(m),
         });
+        await jpnWorker.setParameters({
+            tessedit_pageseg_mode: Tesseract.PSM.SINGLE_LINE,
+        });
 
         try {
-            if(engWorker === null || jpnWorker === null) {
+            if (engWorker === null || jpnWorker === null) {
                 return;
             }
 
@@ -1317,10 +1324,10 @@ export function App() {
                             gap: '5px',
                             flexWrap: 'wrap'
                         }}>
-                            <button onClick={() => handleSeek(-1)}>Back 1s (D)</button>
-                            <button onClick={() => handleSeek(-(1 / frameRate))}>Back 1f (F)</button>
-                            <button onClick={() => handleSeek(1 / frameRate)}>Forward 1f (J)</button>
-                            <button onClick={() => handleSeek(1)}>Forward 1s (K)</button>
+                            <button onClick={() => handleSeek(-1)}>1秒戻る (D)</button>
+                            <button onClick={() => handleSeek(-(1 / frameRate))}>1F戻る (F)</button>
+                            <button onClick={() => handleSeek(1 / frameRate)}>1F進む (J)</button>
+                            <button onClick={() => handleSeek(1)}>1秒進む (K)</button>
                             <label style={{marginLeft: '10px'}}>
                                 FPS:
                                 <input type="number" value={frameRate}
@@ -1377,7 +1384,7 @@ export function App() {
                                 <>
                                     <button onClick={runOCR} disabled={isOcrRunning || selections.length === 0}
                                             style={{marginLeft: '10px'}}>
-                                        {isOcrRunning ? 'Processing...' : 'Run OCR (Space)'}
+                                        {isOcrRunning ? '実行中...' : 'OCR実行 (Space)'}
                                     </button>
                                     <label>
                                         閾値ステップ:
@@ -1401,24 +1408,33 @@ export function App() {
                                 </>
                             )}
                         </div>
-                        {selections.length > 0 && (
+                        {selections.length > 0 && ( // This block renders the Selections table
                             <div style={{marginTop: '20px'}}>
-                                <h3>Selections</h3>
+                                <div style={{display: 'flex', alignItems: 'center', gap: '10px'}}>
+                                    <h3>Selections</h3>
+                                    <button onClick={() => setShowSelectionDetails(!showSelectionDetails)} style={{padding: '0.2em 0.8em'}}>
+                                        {showSelectionDetails ? '設定を隠す' : '設定を表示'}
+                                    </button>
+                                </div>
                                 <table border={1}
                                        style={{width: '100%', maxWidth: '700px', borderCollapse: 'collapse'}}>
                                     <thead>
                                     <tr>
-                                        <th>Label</th>
-                                        <th>Action</th>
-                                        <th>X</th>
-                                        <th>Y</th>
-                                        <th>Width</th>
-                                        <th>Height</th>
-                                        <th>Threshold</th>
-                                        <th>Scale X</th>
-                                        <th>Scale Y</th>
-                                        <th>Processed Image</th>
-                                        <th>OCR Result</th>
+                                        <th>項目名</th>
+                                        {showSelectionDetails && (
+                                            <>
+                                                <th>Action</th>
+                                                <th>X</th>
+                                                <th>Y</th>
+                                                <th>Width</th>
+                                                <th>Height</th>
+                                                <th>Threshold</th>
+                                                <th>Scale X</th>
+                                                <th>Scale Y</th>
+                                            </>
+                                        )}
+                                        <th>入力画像</th>
+                                        <th>OCR結果</th>
                                         <th>補正値</th>
                                     </tr>
                                     </thead>
@@ -1436,7 +1452,7 @@ export function App() {
                                                 <td>
                                                     {rect.label}
                                                 </td>
-                                                {(() => {
+                                                {showSelectionDetails && (() => {
                                                     const isSplit = ['NOTES', 'CHORD', 'PEAK', 'CHARGE', 'SCRATCH', 'SOF-LAN'].includes(rect.label);
                                                     return (
                                                         <>
@@ -1495,24 +1511,28 @@ export function App() {
                                                         </>
                                                     );
                                                 })()}
-                                                <td>
-                                                    <input type="number" value={rect.threshold}
-                                                           onChange={(e) => handleSelectionParamChange(index, 'threshold', parseInt(e.target.value, 10))}
-                                                           min={0} max={255} style={{width: '50px'}}/>
-                                                </td>
-                                                <td>
-                                                    <input type="number" value={rect.scaleX}
-                                                           onChange={(e) => handleSelectionParamChange(index, 'scaleX', parseFloat(e.target.value))}
-                                                           min={0.1} step={0.1} style={{width: '35px'}}/>
-                                                </td>
-                                                <td>
-                                                    <input type="number" value={rect.scaleY}
-                                                           onChange={(e) => handleSelectionParamChange(index, 'scaleY', parseFloat(e.target.value))}
-                                                           min={0.1} step={0.1} style={{width: '35px'}}/>
-                                                </td>
+                                                {showSelectionDetails && (
+                                                    <>
+                                                        <td>
+                                                            <input type="number" value={rect.threshold}
+                                                                   onChange={(e) => handleSelectionParamChange(index, 'threshold', parseInt(e.target.value, 10))}
+                                                                   min={0} max={255} style={{width: '50px'}}/>
+                                                        </td>
+                                                        <td>
+                                                            <input type="number" value={rect.scaleX}
+                                                                   onChange={(e) => handleSelectionParamChange(index, 'scaleX', parseFloat(e.target.value))}
+                                                                   min={0.1} step={0.1} style={{width: '35px'}}/>
+                                                        </td>
+                                                        <td>
+                                                            <input type="number" value={rect.scaleY}
+                                                                   onChange={(e) => handleSelectionParamChange(index, 'scaleY', parseFloat(e.target.value))}
+                                                                   min={0.1} step={0.1} style={{width: '35px'}}/>
+                                                        </td>
+                                                    </>
+                                                )}
                                                 <td>
                                                     <div style={{
-                                                        width: "350px",
+                                                        width: "600px",
                                                         overflowX: "auto",
                                                         whiteSpace: "nowrap"
                                                     }}>
