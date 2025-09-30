@@ -942,6 +942,7 @@ export function App() {
                 .replace(/H/g, '5')
                 .replace(/b/g, '6')
                 .replace(/G/g, '6')
+                .replace(/\?/g, '7')
                 .replace(/B/g, '8')
                 .replace(/Q/g, '9')
                 .replace(/g/g, '9')
@@ -967,6 +968,10 @@ export function App() {
             if (text.indexOf(".") > 3) {
                 const length = text.indexOf(".")
                 text = text.slice(length - 3)
+            }
+
+            if (text.slice(text.indexOf(".") + 1, text.length).length > 2) {
+                text = text.slice(0, text.indexOf(".") + 1) + text.slice(text.indexOf(".") + 1, text.length).replace(".", "")
             }
 
             if (text.slice(text.indexOf("."), text.length).length > 3) {
