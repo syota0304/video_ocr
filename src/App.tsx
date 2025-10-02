@@ -923,10 +923,13 @@ export function App() {
         const performSimpleCorrection = (text: string): string => {
             if (!text) return '';
             text = text
+                .replace(/nr/g, '112')
+                .replace(/r=/g, '112')
                 .replace(/I/g, '1')
                 .replace(/i/g, '1')
                 .replace(/l/g, '1')
                 .replace(/\|/g, '1')
+                .replace(/\)/g, '1')
                 .replace(/!/g, '1')
                 .replace(/]/g, '1')
                 .replace(/e/g, '2')
@@ -946,6 +949,7 @@ export function App() {
                 .replace(/B/g, '8')
                 .replace(/Q/g, '9')
                 .replace(/g/g, '9')
+                .replace(/=/g, '9')
                 .replace(/O/g, '0')
                 .replace(/o/g, '0')
                 .replace(/D/g, '0')
@@ -976,6 +980,10 @@ export function App() {
 
             if (text.slice(text.indexOf("."), text.length).length > 3) {
                 text = text.slice(0, text.indexOf(".") + 3)
+            }
+
+            if (text.slice(text.indexOf(".") + 1, text.length) === "") {
+                text = text + "11"
             }
 
             return text;
